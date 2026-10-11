@@ -66,8 +66,9 @@ app_name() {
 require_java() {
     command -v java >/dev/null 2>&1 || die "java not found. Install a JDK 17+ (e.g. Temurin)."
     local ver
-    ver="$(java -version 2>&1 | head -n1 | sed -E 's/.*version "([0-9]+).*/\1/')"
-    [[ "$ver" -ge 17 ]] 2>/dev/null || warn "Java $ver detected — the build and CLI expect Java 17+."
+    # pick the `version "..."` line: JAVA_TOOL_OPTIONS makes java print a "Picked up ..." banner first
+    ver="$(java -version 2>&1 | grep -m1 'version "' | sed -E 's/.*version "([0-9]+).*/\1/')"
+    [[ "$ver" =~ ^[0-9]+$ && "$ver" -ge 17 ]] || warn "Java $ver detected — the build and CLI expect Java 17+."
 }
 
 require_adb() {
