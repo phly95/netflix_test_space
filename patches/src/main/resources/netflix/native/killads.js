@@ -463,32 +463,41 @@ function hhYield(){ return HH_ENABLED && !clcsDone && (Date.now()-_fcT0)<30000; 
 // longer matches our patched copy) — so the 2nd episode, or any play after the cap, got the prompt
 // ~1-2s into playback. It now keeps re-sweeping for unpatched copies for the whole session
 // (idempotent: already-flipped bytes are skipped) at a light 2s cadence.
+// SLICED sweep (2026-10): a whole-heap pass is several seconds of synchronous scanSync on a TV CPU, and
+// Frida's JS lock is held for all of it. Anything else that needs that lock — notably the eval hook's
+// onEnter on Netflix's own thread — blocks until the pass ends, which on the first device build stalled
+// boot at the splash screen. (Host repro: 600 calls of a hooked function took 5.5s instead of 1.3s with
+// ~0.6s passes running.) So the pass is cut into ~40ms slices with the lock released between them.
+var FC_SLICE_MS=40;
 function fastCLCS(){ if(!HH_ENABLED)return; _fcN++;
-  var rs=Process.enumerateRanges('rw-');
-  { var p=pat(FC_ANCHOR), hit=0, wrote=0;
-    for(var i=0;i<rs.length;i++){var r=rs[i];if(r.size>128*1024*1024)continue;
-      try{var h=Memory.scanSync(r.base,r.size,p);for(var j=0;j<h.length;j++){ var a=h[j].address;
-        for(var k=0;k<FC_OFFS.length;k++){ var t=a.add(FC_OFFS[k]); if(t.readU8()!==0x63)continue; Memory.protect(t,1,'rw-'); t.writeU8(0x78); wrote++; }
-        hit++; }}catch(e){}}
+  var rs=Process.enumerateRanges('rw-'), idx=0, hit=0, wrote=0, hit2=0, wrote2=0;
+  var p=pat(FC_ANCHOR), p2=pat(FR_ANCHOR);
+  function finish(){
     if(hit&&!clcsDone){ clcsDone=true; for(var ai=0;ai<CLCS_ANCHORS.length;ai++) clcsFlipped[CLCS_ANCHORS[ai].lbl]=true; }
     if(wrote) L('PATCH CLCS(fast): gate case-labels broken x'+hit+' at +'+(Date.now()-_fcT0)+'ms (pass '+_fcN+')');
-  }
-  { var p2=pat(FR_ANCHOR), hit2=0, wrote2=0;
-    for(var i2=0;i2<rs.length;i2++){var r2=rs[i2];if(r2.size>128*1024*1024)continue;
-      try{var h2=Memory.scanSync(r2.base,r2.size,p2);for(var j2=0;j2<h2.length;j2++){ var t2=h2[j2].address.add(FR_ANCHOR.length);
-        var vc=t2.readU8(), c1=t2.add(1).readU8(), c2=t2.add(2).readU8();
-        if(vc===0x30){ hit2++; continue; }                       // already '0'
-        if(!isAlpha(vc)||c1!==0x29||c2!==0x7b) continue;         // expect <var>){
-        Memory.protect(t2,1,'rw-'); t2.writeU8(0x30); hit2++; wrote2++;
-        L('PATCH CLCS(route2): doRouteOnFetchedInterstitial !'+String.fromCharCode(vc)+'->!0 (playback interstitial -> exit) @'+t2); }}catch(e){}}
     if(hit2) frDone=true;
     if(wrote2) L('PATCH CLCS(route2): wrote x'+wrote2+' at +'+(Date.now()-_fcT0)+'ms (pass '+_fcN+')');
+    // tight while the dispatcher is pending (~2 min), otherwise a light 2s sweep for the session.
+    if(!clcsDone&&_fcN<800) setTimeout(fastCLCS,150);
+    else setTimeout(fastCLCS,2000);
   }
-  // tight while the dispatcher is pending (~2 min), otherwise a light 2s sweep for the rest of the
-  // session. (Do NOT go tight after evals: the eval hook's onEnter waits on the same Frida JS lock, so
-  // back-to-back full-memory passes during appboot stalled the app at the splash screen.)
-  if(!clcsDone&&_fcN<800) setTimeout(fastCLCS,150);
-  else setTimeout(fastCLCS,2000);
+  function slice(){ var t0=Date.now();
+    while(idx<rs.length){ var r=rs[idx++]; if(r.size>128*1024*1024)continue;
+      try{ var h=Memory.scanSync(r.base,r.size,p);
+        for(var j=0;j<h.length;j++){ var a=h[j].address;
+          for(var k=0;k<FC_OFFS.length;k++){ var t=a.add(FC_OFFS[k]); if(t.readU8()!==0x63)continue; Memory.protect(t,1,'rw-'); t.writeU8(0x78); wrote++; }
+          hit++; } }catch(e){}
+      try{ var h2=Memory.scanSync(r.base,r.size,p2);
+        for(var j2=0;j2<h2.length;j2++){ var t2=h2[j2].address.add(FR_ANCHOR.length);
+          var vc=t2.readU8(), c1=t2.add(1).readU8(), c2=t2.add(2).readU8();
+          if(vc===0x30){ hit2++; continue; }                       // already '0'
+          if(!isAlpha(vc)||c1!==0x29||c2!==0x7b) continue;         // expect <var>){
+          Memory.protect(t2,1,'rw-'); t2.writeU8(0x30); hit2++; wrote2++;
+          L('PATCH CLCS(route2): doRouteOnFetchedInterstitial !'+String.fromCharCode(vc)+'->!0 (playback interstitial -> exit) @'+t2); } }catch(e){}
+      if(Date.now()-t0>FC_SLICE_MS){ setTimeout(slice,5); return; }   // release the Frida lock
+    }
+    finish(); }
+  slice();
 }
 // Read-only diagnostic: find each CLCS_MARKERS string in the JS heap and dump ~100 chars of context
 // per hit so the runtime consumer site can be identified from logcat. Runs only while HH_ENABLED and
@@ -565,6 +574,11 @@ var EVAL_DEFER=true;
 // namespace — a known way to break library loading on Android 7+). Arming by polling is enough: the
 // play-time household module loads long after libnetflix.so.
 var EVAL_ARM_DLOPEN=false;
+// EVAL_ARM_DELAY_MS: do not attach the hook during boot. Netflix's eval callback fires hundreds of
+// times while appboot loads, and every call has to wait for the Frida JS lock; the repo's original
+// note (LATE-ARM, "+40s") said the same and I wrongly deleted it. The play-time household module loads
+// long after this, and the sliced sweeps above cover the first minute (profile select).
+var EVAL_ARM_DELAY_MS=60000;
 // EVAL_ONENTER_NOOP: diagnostic only — attach the hook but do nothing in onEnter except count.
 var EVAL_ONENTER_NOOP=false;
 var EVAL_PROLOGUE=0x137626c;                 // Gibbon2Bridge eval callback prologue (13.0.1 build 25028)
@@ -699,13 +713,16 @@ function armEvalHook(){
 // a light 100ms poll (optionally also on its dlopen — see EVAL_ARM_DLOPEN).
 function startEvalHook(){
   if(!EVALHOOK_ENABLED) return;
+  setTimeout(startEvalHookNow, EVAL_ARM_DELAY_MS);
+}
+function startEvalHookNow(){
   if(armEvalHook()) return;
   if(EVAL_ARM_DLOPEN) try{ var dl=Module.findGlobalExportByName('android_dlopen_ext');
     if(dl) Interceptor.attach(dl,{
       onEnter:function(a){ try{ this.nf=a[0].readCString().indexOf('netflix')>=0; }catch(e){ this.nf=false; } },
       onLeave:function(){ if(this.nf&&!evalHooked) armEvalHook(); } });
   }catch(e){ L('EVALHOOK: dlopen hook failed '+e); }
-  var polls=0; (function poll(){ if(armEvalHook()||++polls>3000) return; setTimeout(poll,100); })();
+  var polls=0; (function poll(){ if(armEvalHook()||++polls>3000) return; setTimeout(poll,1000); })();
 }
 
 var tries=0;

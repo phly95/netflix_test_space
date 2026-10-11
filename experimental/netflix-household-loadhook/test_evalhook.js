@@ -20,7 +20,7 @@ class P{ constructor(o){ this.o=Number(o)>>>0; }
   not(){ return new P((~this.o)>>>0); } isNull(){ return this.o===0; } toInt32(){ return this.o|0; }
   toString(){ return '0x'+this.o.toString(16); } }
 const ptr=x=>new P(typeof x==='string'?parseInt(x):x);
-const logs=[], pendingDrain=[];
+const logs=[], pendingDrain=[], timers=[]; let sandboxRanges=()=>[];
 const Memory={ protect(){return true;}, allocUtf8String(s){ const a=alloc(s.length+1); MEM.write(s,a,'latin1'); return new P(a); },
   scanSync(base,size,patStr){ const needle=Buffer.from(patStr.split(' ').map(h=>parseInt(h,16)));
     base.chk(size); const out=[]; let i=base.o; const end=base.o+size;
@@ -28,9 +28,9 @@ const Memory={ protect(){return true;}, allocUtf8String(s){ const a=alloc(s.leng
 const sandbox={ console, Memory, ptr, NativePointer:P, Date, JSON, Math, Object, String, Number, Uint8Array, parseInt, isNaN,
   NativeFunction:function(){ return function(lvl,tag,msg){ logs.push(msg.readCString()); return 0; }; },
   Module:{ findGlobalExportByName(){ return new P(0x10); } },
-  Process:{ enumerateRanges(){ return []; }, findModuleByName(){ return null; } },
+  Process:{ enumerateRanges(){ return sandboxRanges(); }, findModuleByName(){ return null; } },
   Interceptor:{ attach(){ throw new Error('no attach in test'); } },
-  setTimeout(fn){ if(fn&&fn.name==='drainEvalQ') pendingDrain.push(fn); return 0; } };  // only the eval drain runs (on demand)
+  setTimeout(fn,ms){ if(fn&&fn.name==='drainEvalQ') pendingDrain.push(fn); else timers.push({fn,ms}); return 0; } };  // timers run on demand
 let code=fs.readFileSync(SRC,'latin1').replace('HH_ENABLED=false','HH_ENABLED=true').replace(/var HH_NOCACHE=\d;/,'var HH_NOCACHE=2;');  // exercise the full cache path
 vm.createContext(sandbox); vm.runInContext(code+'\n;this.__t={hhPatchRange,noCachePatchRange,findEvalSources,seqStrLen,onEvalEnter,CACHE_A_NEW,CACHE_A_OLD,CACHE_B_NEW,CACHE_B_OLD,st:function(){return {clcsDone,frDone,hhDone};}};',sandbox);
 const T=sandbox.__t; let fail=0;
@@ -88,6 +88,19 @@ const fakeNr={ script:{ clearScriptCache(){cleared++;}, addEventListener(n,f){li
   gibbon:{ addEventListener(n,f){ if(n==='uiLoaded') ui=f; }, loadScript(){} }, options:{}, setTimeout(){}, stacktrace(){return '';} };
 new Function('nr','er','globalThis.console=console;'+exprN)(fakeNr,fakeNr); if(ui) ui();
 ok(cleared===1 && listeners.length===0 && cached===0, 'rewritten bootstrap runs: clearScriptCache x1, no cache listener, uiLoaded caches nothing');
+
+// 2b) Sliced heap sweep (fastCLCS): yields between ranges, patches every unpatched copy, repeats forever
+{ const hmA=v8str(hhMod), hmB=v8str(hhMod);                 // two fresh unpatched copies (e.g. re-evals)
+  const rg=[{base:new P(hmA),size:hhMod.length+12},{base:new P(hmB),size:hhMod.length+12}];
+  sandboxRanges=()=>rg; vm.runInContext('FC_SLICE_MS=-1;',sandbox);   // force a yield after every range
+  timers.length=0; vm.runInContext('fastCLCS()',sandbox);
+  let yields=0, guard=0;
+  while(timers.length&&guard++<50){ const t=timers.shift(); if(t.ms>=1000||t.ms===150) { timers.unshift(t); break; } yields++; t.fn(); }
+  ok(yields>=1, 'sweep yields the Frida thread between ranges (setTimeout slices), yields='+yields);
+  ok(timers.length===1 && (timers[0].ms===150||timers[0].ms===2000), 'sweep reschedules itself afterwards (persistent, no pass cap)');
+  ok(strAt(hmA).includes('!0){p.next=24')&&strAt(hmB).includes('!0){p.next=24'), 'sweep patched route2 in both unpatched copies');
+  ok(strAt(hmA).includes('case"xlcsInterstitialGate"')&&strAt(hmB).includes('case"xlcsInterstitialGate"'), 'sweep broke dispatcher labels in both copies');
+  sandboxRanges=()=>[]; timers.length=0; }
 
 // 3) Unrelated large source: nothing written
 const sD=v8str(pad(5000)+'function foo(){return 1}'+pad(5000));
