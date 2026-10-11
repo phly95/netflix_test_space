@@ -63,3 +63,30 @@ Host test (no device): `node test_evalhook.js ../../patches/src/main/resources/n
   longer produced either way.
 - A third play-time route (for example post-play or autoplay of the next episode through a different
   saga) would not be covered by these anchors.
+
+## Scheduling findings (device logs killlog2-4, host repro) — read before touching the scanners
+
+The hang and most of the "household still shows" failures were **JS-thread starvation**, not pattern
+mismatches. Frida runs all script code on one thread and `Memory.scanSync` holds it for the whole scan
+(~2.4s per full-heap pattern on the Onn TV, ~550 `rw-` ranges).
+
+| Observation | Where |
+|---|---|
+| One `fastHH` pass (4 HH anchors + 16 MHU names, all `scanSync`) blocked the thread **39s**; the dispatcher break, every timer and the diagnostics starved behind it | killlog3 |
+| `apply()` (~15 patterns) and `fastMASTER` (every 120ms) run multi-second synchronous passes for the whole session; `MASTER` cannot land on the current 13.0.1 JS (`M2-MISS`) so `fastMASTER` never stops | killlog2-3 |
+| Async `Memory.scan` queue showed `scans=2+11741` and barely moved: each scan **completes by calling back into the JS thread**, and back-to-back sync ad-kill steps left only a ~25ms slot between them | killlog4 |
+| An eval hook's `onEnter` (even empty) waits for the same JS lock on Netflix's own thread: 600 calls took 5.4s vs 1.3s with a scanSync loop running (host repro), and the first device builds hung at the splash | host + device |
+
+What the code does now: household scans use async `Memory.scan` with a 2-in-flight pool, household jobs
+have priority over diagnostics, ranges under 32KB are skipped, and the ad-kill work (`apply`,
+`fastMASTER`, `dumpMASTER`) is deferred for the first 60s and only runs while no household scan is
+pending (then throttled to once per 120s). The household module is found with ONE seed scan (`MHU_`) and
+one detector anchor per cycle; a fresh copy triggers a full recheck 300ms later.
+
+Host tests: `test_evalhook.js` (mock) and a real-frida run of the actual script against a process with
+~1500 small ranges, 400MB of heap and household modules appearing at +0s, +40s and +98s (all patched
+within ~10s each, queue draining between cycles).
+
+Still unknown (needs a device log): which route shows the household screen right after profile select —
+the dispatcher labels are broken but the screen still came up. `HHDIAG` lines dump the real routing JS
+(`pushClcsInterstitialGate` callers seen so far: the `growthPush` saga and the playback-exit path).

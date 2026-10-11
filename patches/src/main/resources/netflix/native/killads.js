@@ -28,21 +28,32 @@ function bytesOf(s){ var b=[]; for (var i=0;i<s.length;i++) b.push(s.charCodeAt(
 // Each is several synchronous full-heap scans that hold the JS lock, and the household patches found by
 // the async scans can only be written from JS, i.e. between those blocks. (MASTER cannot land on the
 // current 13.0.1 JS anyway: M2-MISS.)
-var ADK_HH_PERIOD=45000;
-var AS_MAX=2, _asRun=0, _asQ=[];
-function aScanPump(){ while(_asRun<AS_MAX&&_asQ.length){ var job=_asQ.shift(); _asRun++; job(); } }
-function aScanRange(r,patStr,onMatch,done){
-  _asQ.push(function(){ var fin=false;
+var ADK_HH_PERIOD=120000;
+// killlog4 (device): scans=2+11741 queued and barely moving. Every async scan completes by calling back
+// into the JS thread, and once apply()/fastMASTER ran their multi-second synchronous steps back to back
+// the callbacks only got a ~25ms slot between steps (~3 scans per 7s). So, in household builds:
+//  - the ad-kill work (adkDefer) waits 60s after launch, and then only runs while NO async scan is pending
+//    or running (hhBusy), and is further throttled to ADK_HH_PERIOD;
+//  - household jobs have priority over the low-priority diagnostics (two queues);
+//  - ranges under AS_MIN_RANGE are skipped (thousands of tiny thread-stack/arena mappings; the device
+//    has ~550 rw- ranges, JS source lives in the big heap ranges).
+var AS_MAX=2, AS_MIN_RANGE=32768, _asRun=0, _asQH=[], _asQL=[];
+function hhBusy(){ return _asRun+_asQH.length+_asQL.length>0; }
+function adkDefer(){ return HH_ENABLED && ((Date.now()-_fcT0)<60000 || hhBusy()); }
+function aScanPump(){ while(_asRun<AS_MAX&&(_asQH.length||_asQL.length)){ var job=_asQH.length?_asQH.shift():_asQL.shift(); _asRun++; job(); } }
+function aScanRange(r,patStr,onMatch,done,low){
+  (low?_asQL:_asQH).push(function(){ var fin=false;
     function end(){ if(fin) return; fin=true; _asRun--; try{ done(); }catch(e){ L('aScan done ERR '+e); } aScanPump(); }
     try{ Memory.scan(r.base,r.size,patStr,{ onMatch:function(a,sz){ try{ onMatch(a,sz); }catch(e){ L('aScan match ERR '+e); } }, onError:function(){ end(); }, onComplete:end }); }
     catch(e){ end(); } });
   aScanPump(); }
-function aScanAll(rs,patStr,onMatch,done){ var list=[];
-  for(var i=0;i<rs.length;i++) if(rs[i].size<=128*1024*1024) list.push(rs[i]);
+function aScanAll(rs,patStr,onMatch,done,low){ var list=[];
+  for(var i=0;i<rs.length;i++) if(rs[i].size>=AS_MIN_RANGE&&rs[i].size<=128*1024*1024) list.push(rs[i]);
   var left=list.length; if(!left){ done(); return; }
-  for(var k=0;k<list.length;k++) aScanRange(list[k],patStr,onMatch,function(){ if(--left===0) done(); }); }
-function runSteps(steps,done){ var i=0;
+  for(var k=0;k<list.length;k++) aScanRange(list[k],patStr,onMatch,function(){ if(--left===0) done(); },low); }
+function runSteps(steps,done,gated){ var i=0;
   (function next(){ if(i>=steps.length){ if(done) done(); return; }
+    if(gated&&adkDefer()){ setTimeout(next,300); return; }   // ad-kill steps only run while no household scan is pending
     var st=steps[i++]; try{ st(); }catch(e){ L('step ERR '+e); } setTimeout(next,25); })(); }
 
 // ---------- (A) manifest patch — legacy metadata.ads[] pod model ----------
@@ -181,14 +192,14 @@ function patchMASTER(rs){ if(masterDone)return;
 // materialising (~+25s), before the first getAdMetadata runs. Write-once (masterDone guard) — stops
 // as soon as both edits land. Mirrors fastHH.
 var _fastMn=0;
-function fastMASTER(){ if(masterDone)return; if(hhYield()){ setTimeout(fastMASTER,250); return; } _fastMn++;
+function fastMASTER(){ if(masterDone)return; if(hhYield()||adkDefer()){ setTimeout(fastMASTER,hhYield()?250:1000); return; } _fastMn++;
   var _rm=null; try{ _rm=Process.enumerateRanges('rw-'); }catch(e){}
   runSteps(_rm?[function(){ patchMASTER(_rm); }, function(){ if(!masterDone) patchMASTERw(_rm); }]:[], function(){
     if(masterDone){ L('fastMASTER: applied by pass '+_fastMn+(mwDone?' (wildcard fallback)':'')); return; }
     // household builds: MASTER cannot land on the current 13.0.1 JS (M2-MISS) and each pass is several
     // synchronous scans, so do not hammer it every 120ms (it starved the household patches).
-    if(_fastMn<500) setTimeout(fastMASTER, HH_ENABLED?(_fastMn<3?4000:ADK_HH_PERIOD):120);   // household builds: 3 quick tries, then slow
-  });
+    if(_fastMn<500) setTimeout(fastMASTER, HH_ENABLED?ADK_HH_PERIOD:120);   // household builds: slow
+  }, true);
 }
 // ---------- (MASTERw) wildcard-tolerant MASTER fallback (2026-09-13, experimental — issue #166) --
 // Most Netflix "server-side" ad drift is just a re-minify that RENAMES single-char locals, which
@@ -258,7 +269,8 @@ function patchMASTERw(rs){ if(masterDone||mwDone)return;
 // ONCE so the new body can be read off-device. Runs only if masterDone stays false ~34s in (ads
 // would already be leaking by then). Read-only; no writes.
 var _mdumpN=0, mdumpDone=false;
-function dumpMASTER(){ if(masterDone||mdumpDone)return; _mdumpN++;
+function dumpMASTER(){ if(masterDone||mdumpDone)return; if(HH_ENABLED){ mdumpDone=true; return; }   // household builds: the dump is already in hand (M2-MISS), skip its synchronous scan
+  _mdumpN++;
   if(_mdumpN<17){ setTimeout(dumpMASTER,2000); return; }   // wait ~34s for appboot JS to materialise
   var rs=Process.enumerateRanges('rw-'), mk='getAdMetadata', mp=pat(mk), hits=0;
   for(var i=0;i<rs.length;i++){var r=rs[i];if(r.size>128*1024*1024)continue;
@@ -535,7 +547,7 @@ var HHD_MARKERS=['pushClcsInterstitialGate','doRouteOnFetchedInterstitial','lcsI
 var HHD_BEFORE=360, HHD_AFTER=840, HHD_MAX=5;
 var hhdSeen={}, hhdCount={}, _hhdN=0, _hhdDone=false;
 function hhStatus(){ if(!HH_DIAG) return;
-  L('HHSTATUS +'+Math.round((Date.now()-_fcT0)/1000)+'s clcs='+clcsDone+' route2='+frDone+' hh='+hhDone+' mhu='+mhuHits+'/'+MHU_PATS.length+' fcPass='+_fcN+' hhPass='+_fastHHn+' scans='+_asRun+'+'+_asQ.length+' eval='+_evalN);
+  L('HHSTATUS +'+Math.round((Date.now()-_fcT0)/1000)+'s clcs='+clcsDone+' route2='+frDone+' hh='+hhDone+' mhu='+mhuHits+'/'+MHU_PATS.length+' fcPass='+_fcN+' hhPass='+_fastHHn+' scans='+_asRun+'+'+_asQH.length+'/'+_asQL.length+' eval='+_evalN);
   if(Date.now()-_fcT0<300000) setTimeout(hhStatus,5000); }
 function looksLikeJs(c){ var n=0; for(var i=0;i<c.length&&n<8;i++){ var ch=c.charCodeAt(i); if(ch===59||ch===123||ch===125||ch===40) n++; } return n>=8; }
 function hhDiag(){ if(!HH_DIAG||_hhdDone) return; _hhdN++;
@@ -552,7 +564,7 @@ function hhDiag(){ if(!HH_DIAG||_hhdDone) return; _hhdN++;
         if(ctx==null||ctx.indexOf(mk)<0||!looksLikeJs(ctx)) return;
         hhdSeen[key]=true; hhdCount[mk]=(hhdCount[mk]||0)+1;
         L('HHDIAG '+mk+' #'+hhdCount[mk]+' @'+a+' +'+Math.round((Date.now()-_fcT0)/1000)+'s ctx='+JSON.stringify(ctx)); },
-      function(){ if(--left===0) after(); }); }
+      function(){ if(--left===0) after(); }, true); }
   for(var mi=0;mi<HHD_MARKERS.length;mi++) if((hhdCount[HHD_MARKERS[mi]]||0)<HHD_MAX) one(HHD_MARKERS[mi]);
   if(left===0) after(); }
 
@@ -783,13 +795,13 @@ function startEvalHookNow(){
 }
 
 var tries=0;
-function apply(){ if(hhYield()){ setTimeout(apply,500); return; } tries++; var rs=Process.enumerateRanges('rw-');
+function apply(){ if(hhYield()||adkDefer()){ setTimeout(apply,hhYield()?500:1000); return; } tries++; var rs=Process.enumerateRanges('rw-');
   var loaded=false,gp=pat('nrdp.gibbon');
   for(var i=0;i<rs.length&&!loaded;i++){if(rs[i].size>128*1024*1024)continue;try{if(Memory.scanSync(rs[i].base,rs[i].size,gp).length)loaded=true;}catch(e){}}
   // One patch function per timer tick (they are several synchronous full-heap scans each) so the async
   // household callbacks and timers interleave. The household patches no longer run from here: fastHH /
   // fastCLCS own them (async, persistent).
-  runSteps(loaded?[function(){patchA(rs);},function(){patchA2(rs);},function(){patchADV(rs);},function(){if(!advDone)patchADVw(rs);},function(){patchDAI(rs);},function(){patchMASTER(rs);},function(){if(!masterDone)patchMASTERw(rs);},function(){patchB(rs);},function(){patchFP(rs);},function(){patchGAID(rs);}]:[], applyDone);
+  runSteps(loaded?[function(){patchA(rs);},function(){patchA2(rs);},function(){patchADV(rs);},function(){if(!advDone)patchADVw(rs);},function(){patchDAI(rs);},function(){patchMASTER(rs);},function(){if(!masterDone)patchMASTERw(rs);},function(){patchB(rs);},function(){patchFP(rs);},function(){patchGAID(rs);}]:[], applyDone, true);
 }
 function applyDone(){
   // Keep polling until applied. The ad-insertion source (ADV/DAI) and prepareAdBreakStates (A)

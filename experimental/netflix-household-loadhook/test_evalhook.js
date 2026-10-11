@@ -21,10 +21,10 @@ class P{ constructor(o){ this.o=Number(o)>>>0; }
   toString(){ return '0x'+this.o.toString(16); } }
 const ptr=x=>new P(typeof x==='string'?parseInt(x):x);
 const logs=[], pendingDrain=[], timers=[]; let sandboxRanges=()=>[];
-const scanSizes=[]; const asyncQ=[]; let inFlight=0, maxInFlight=0;
+const scanSizes=[]; const scanCalls=[]; const asyncQ=[]; let inFlight=0, maxInFlight=0;
 function flushAsync(){ while(asyncQ.length) asyncQ.shift()(); }
 const Memory={ protect(){return true;},
-  scan(base,size,patStr,cb){ inFlight++; maxInFlight=Math.max(maxInFlight,inFlight); let hits=[]; try{ hits=Memory.scanSync(base,size,patStr); }catch(e){ asyncQ.push(()=>{ inFlight--; cb.onError(String(e)); }); return; }
+  scan(base,size,patStr,cb){ scanCalls.push(patStr); inFlight++; maxInFlight=Math.max(maxInFlight,inFlight); let hits=[]; try{ hits=Memory.scanSync(base,size,patStr); }catch(e){ asyncQ.push(()=>{ inFlight--; cb.onError(String(e)); }); return; }
     asyncQ.push(()=>{ inFlight--; hits.forEach(h=>cb.onMatch(h.address,h.size)); cb.onComplete(); }); }, allocUtf8String(s){ const a=alloc(s.length+1); MEM.write(s,a,'latin1'); return new P(a); },
   scanSync(base,size,patStr){ scanSizes.push(size); const needle=Buffer.from(patStr.split(' ').map(h=>parseInt(h,16)));
     base.chk(size); const out=[]; let i=base.o; const end=base.o+size;
@@ -38,7 +38,7 @@ const sandbox={ console, Memory, ptr, NativePointer:P, Date, JSON, Math, Object,
   setTimeout(fn,ms){ if(fn&&fn.name==='drainEvalQ') pendingDrain.push(fn); else timers.push({fn,ms}); return 0; } };  // timers run on demand
 let code=fs.readFileSync(SRC,'latin1').replace('HH_ENABLED=false','HH_ENABLED=true').replace(/var HH_NOCACHE=\d;/,'var HH_NOCACHE=2;');  // exercise the full cache path
 vm.createContext(sandbox); vm.runInContext(code+'\n;this.__t={aScanAll,runSteps,fastCLCS,fastHH,hhPatchRange,noCachePatchRange,findEvalSources,seqStrLen,onEvalEnter,CACHE_A_NEW,CACHE_A_OLD,CACHE_B_NEW,CACHE_B_OLD,st:function(){return {clcsDone,frDone,hhDone};}};',sandbox);
-const T=sandbox.__t; let fail=0;
+const T=sandbox.__t; let fail=0; vm.runInContext('AS_MIN_RANGE=0;',sandbox);
 function ok(c,m){ console.log((c?'PASS ':'FAIL ')+m); if(!c)fail++; }
 // Lay out a V8 SeqOneByteString: map | hash | length | chars ; return untagged address
 function v8str(text){ const b=Buffer.from(text,'latin1'); const a=alloc(12+b.length); MEM.writeUInt32LE(0xdead0001,a); MEM.writeUInt32LE(0,a+4); MEM.writeUInt32LE(b.length,a+8); b.copy(MEM,a+12); return a; }
@@ -102,6 +102,26 @@ ok(cleared===1 && listeners.length===0 && cached===0, 'rewritten bootstrap runs:
   flushAsync();
   ok(doneN===1 && matches===1 && maxInFlight<=2, 'pool drains all 6 ranges, one completion, one match, max in flight '+maxInFlight); }
 function pat8(x){ return x.split('').map(c=>('0'+c.charCodeAt(0).toString(16)).slice(-2)).join(' '); }
+
+// 2b') small ranges are skipped, household jobs outrank low-priority ones, ad-kill waits while scans are pending
+{ vm.runInContext('AS_MIN_RANGE=32768;',sandbox); scanCalls.length=0;
+  const tiny={base:new P(alloc(4096)),size:4096}, big={base:new P(alloc(65536)),size:65536};
+  let d1=0; T.aScanAll([tiny,big],pat8('ZZZZ'),()=>{},()=>{d1++;}); flushAsync();
+  ok(scanCalls.length===1 && d1===1, 'ranges under AS_MIN_RANGE are skipped (1 of 2 scanned)');
+  vm.runInContext('AS_MIN_RANGE=0;',sandbox); scanCalls.length=0;
+  const rr=[]; for(let k=0;k<4;k++) rr.push({base:new P(alloc(4096)),size:4096});
+  T.aScanAll(rr,pat8('LOWLOWLOW'),()=>{},()=>{},true);          // 4 low-priority jobs; 2 start immediately
+  T.aScanAll(rr.slice(0,2),pat8('HIGHHIGH'),()=>{},()=>{});     // then 2 high-priority jobs queue behind them
+  asyncQ.shift()();                                              // one running scan completes -> next job starts
+  const lowStr=pat8('LOWLOWLOW'), hiStr=pat8('HIGHHIGH');
+  ok(scanCalls[2]===hiStr, 'when a slot frees, a queued HIGH-priority job starts before the remaining LOW ones');
+  flushAsync(); scanCalls.length=0;
+  vm.runInContext('_fcT0=Date.now()-61000;',sandbox);
+  ok(vm.runInContext('adkDefer()',sandbox)===false, 'ad-kill may run once 60s have passed and no scan is pending');
+  T.aScanAll(rr.slice(0,1),pat8('BUSYBUSY'),()=>{},()=>{});
+  ok(vm.runInContext('adkDefer()',sandbox)===true, 'ad-kill is deferred while a household scan is pending'); flushAsync();
+  vm.runInContext('_fcT0=Date.now();',sandbox);
+  ok(vm.runInContext('adkDefer()',sandbox)===true, 'ad-kill is deferred during the first 60s'); }
 
 // 2c) fastCLCS (async): patches every unpatched copy, persistent reschedule, no JS-thread blocking
 { const hmA=v8str(hhMod), hmB=v8str(hhMod);
