@@ -24,6 +24,7 @@ profile select). The main **ad kill is unverified** (`getAdMetadata` source not 
 | [`ABI_DECODE_2026-09-15.md`](ABI_DECODE_2026-09-15.md) | `FunctionCallbackInfo`/String layout decode, live proof of the `+12` String read, eval prologue `0x137626c` | §7, §10 hold; **§8/§9 (code-cache theory) were retracted by §10** |
 | [`test_evalhook.js`](test_evalhook.js) | host test (83 checks) with a mocked Frida API over a Buffer | **current**; run it on the exact shipped script |
 | [`enum_bridge.py`](enum_bridge.py), [`gibbon2bridge-methods.txt`](gibbon2bridge-methods.txt) | static enumeration of `Gibbon2Bridge` natives: `eval` is the only compile entry (no `loadScript`/`compile`/`run`) | reusable |
+| [`logs/`](logs/README.md) | the nine redacted `KILL` captures (killlog1-9) behind the handoff, with what each shows and what was redacted | evidence; do not edit |
 | [`lolomo_probe.js`](lolomo_probe.js) | read-only recon for Nikflix #131 (`CLCSInterstitialLolomo`); never bundled | no result recorded |
 
 Run the host test: `node test_evalhook.js ../../patches/src/main/resources/netflix/native/killads.js`

@@ -1,0 +1,15 @@
+--------- beginning of main
+10-11 01:13:01.060 17753 17790 E KILL    : PATCH B: pause z() displayAd->void0 @0x33eeaa85
+10-11 01:13:04.069 17753 17790 E KILL    : PATCH HH: flag:isActiveMisdetectionSession 0->1 @0xb8e926cf
+10-11 01:13:07.079 17753 17790 E KILL    : PATCH HH: flag:isNetflixHouseholdAvailable 0->1 @0xb8e923c4
+10-11 01:13:07.080 17753 17790 E KILL    : PATCH HH: flag:isNetflixHouseholdAvailable 0->1 @0xb8e93237
+10-11 01:13:09.938 17753 17790 E KILL    : PATCH HH: render:misdetectionAvailable(y) f->0 @0xb8e8f3f9
+10-11 01:13:12.514 17753 17790 E KILL    : PATCH HH: render:netflixHouseholdAvailable(w) h->0 @0xb8e8f406
+10-11 01:17:29.547 18721 18721 E KILL    : killads ready (A/A2/ADV/DAI/MASTER ad-kill + B pause, single-shot; ad+resume monitor)
+10-11 01:17:29.547 18721 18721 E KILL    : fastMASTER armed (getAdMetadata early race-win scanner — beat first-title pre/mid-roll)
+10-11 01:17:29.547 18721 18721 E KILL    : dumpMASTER armed (recon: dump getAdMetadata body if both exact+wildcard MASTER miss — #166)
+10-11 01:17:29.547 18721 18721 E KILL    : fastHH armed (household prompt suppression, early race-win scanner)
+10-11 01:17:29.547 18721 18721 E KILL    : fastCLCS armed (gate dispatcher race-win)
+10-11 01:17:42.597 18721 18749 E KILL    : PATCH CLCS(fast): gate case-labels broken x1 at +13051ms (pass 3)
+10-11 01:17:54.061 18721 18749 E KILL    : MASTERw M2-MISS (no write, crash-safe) dump@0xb8bcecb9 cond="t" ctx="ntsManager.getAds(e);if(t){var i,n,r,s=!!(null==(r=e.manifest)||null==(n=r.adverts)?void 0:n.daiSupported);i=t.map(function(e){return new eX(e,ed({canHydrate:s,isHydrated:!1,isSkippable:!1}))}),i=this.defaultAdBreakEnricher.enrichAds(i,e),i=this.applyDaiPrefetch(i,e);var a=(0,z.Us)(e)&&e.isOrWasLive;e.adverts&&e.adverts.adBreaks.length&&(!a||this.config.enableLivePreRolls)&&(i=this.mergeReplacedAds(e.adverts,i,e))}else{if(!e.adverts||!e.adverts.adBreaks.length)return;i=e.adverts.adBreaks.map(function(e){var t,i=(0,em.ik)(e);return new eX(i,ed({isHydrated:!!i.ads||i.embedded,canHydrate:!!i.adBreakToken&&!i.embedded,isPreroll:null!=(t=i.isPreroll)&&t}))})}return i=this.adBreakHydrator.enrichAd"
+10-11 01:17:54.063 18721 18749 E KILL    : ANCHOR MAP: A=0 A2=0 ADV=0 DAI=0 MASTER=0 B=0 FP=off GAID=off HH=0 pass=1

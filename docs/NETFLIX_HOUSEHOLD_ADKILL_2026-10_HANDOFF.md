@@ -26,9 +26,10 @@ question** (§6), and the single remaining ad is not proof of anything.
 
 ## 1. Builds and logs
 
-The user labels device builds with letters and keeps the logcat of each run (`adb logcat -s KILL:*`). Raw logs are
-**not** committed: they contain heap fragments (telemetry JSON, MSL header blobs). The tables here were produced
-with [`testing/scripts/killlog-timeline.py`](../testing/scripts/killlog-timeline.py).
+The user labels device builds with letters and keeps the logcat of each run (`adb logcat -s KILL:*`). The nine
+captures are committed, **redacted**, in [`../experimental/netflix-household-loadhook/logs/`](../experimental/netflix-household-loadhook/logs/README.md)
+(the README there lists exactly what was redacted: locale, telemetry ids/timestamps, MSL ciphertext fragments, a little
+heap bytes). The tables here were produced with [`testing/scripts/killlog-timeline.py`](../testing/scripts/killlog-timeline.py).
 
 | Label | Source | Log | What it was | Household | Ads |
 |---|---|---|---|---|---|
@@ -201,7 +202,8 @@ node experimental/netflix-household-loadhook/test_evalhook.js patches/src/main/r
 # 2. build a signed test APK from the working K-prio APK and split it (see testing/NETFLIX_TEST_APK_BUILD.md)
 KS_PATH=… KS_KEY_PASS=… testing/scripts/build-test-apk.sh netflix-hh-K-prio.apk R --set ADK_ADV_ENABLED=false
 # 3. after a device run, compare against killlog5 / killlog9
-python3 -I testing/scripts/killlog-timeline.py 5=killlog5.txt 9=killlog9.txt new=killlogN.txt
+L=experimental/netflix-household-loadhook/logs
+python3 -I testing/scripts/killlog-timeline.py 5=$L/killlog5.txt 9=$L/killlog9.txt new=killlogN.txt
 ```
 
 Acceptance for household (killlog5/9): dispatcher ≤ +16 s, HH flags ≤ +17 s, route 2 ≤ +28 s, `fastADK: starting` after

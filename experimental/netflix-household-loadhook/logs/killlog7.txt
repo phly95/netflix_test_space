@@ -1,0 +1,61 @@
+--------- beginning of main
+10-11 02:27:49.927 E/KILL    (27034): killads ready (A/A2/ADV/DAI/MASTER ad-kill + B pause, single-shot; ad+resume monitor)
+10-11 02:27:49.927 E/KILL    (27034): OBS monitor off in household builds (4 synchronous full-heap scans per cycle starved the household patches)
+10-11 02:27:49.927 E/KILL    (27034): fastADK armed (async ad-kill: ADV2 + MASTER2 + B + DAI, rename-tolerant)
+10-11 02:27:49.927 E/KILL    (27034): fastHH armed (household prompt suppression, early race-win scanner)
+10-11 02:27:49.927 E/KILL    (27034): fastCLCS armed (gate dispatcher race-win)
+10-11 02:27:49.927 E/KILL    (27034): evalHook arming (household pre-compile source patch)
+10-11 02:27:49.927 E/KILL    (27034): HHDIAG armed (status every 5s + household routing JS dumps)
+10-11 02:27:52.929 E/KILL    (27034): HHSTATUS +3s clcs=false route2=false hh=false mhu=0/16 ads[adv=false master=false b=false dai=false] fcPass=2 hhPass=1 scans=2+1939/0 eval=0
+10-11 02:27:57.932 E/KILL    (27034): HHSTATUS +8s clcs=false route2=false hh=false mhu=0/16 ads[adv=false master=false b=false dai=false] fcPass=2 hhPass=2 scans=2+2007/0 eval=0
+10-11 02:28:13.015 E/KILL    (27159): killads ready (A/A2/ADV/DAI/MASTER ad-kill + B pause, single-shot; ad+resume monitor)
+10-11 02:28:13.015 E/KILL    (27159): OBS monitor off in household builds (4 synchronous full-heap scans per cycle starved the household patches)
+10-11 02:28:13.015 E/KILL    (27159): fastADK armed (async ad-kill: ADV2 + MASTER2 + B + DAI, rename-tolerant)
+10-11 02:28:13.015 E/KILL    (27159): fastHH armed (household prompt suppression, early race-win scanner)
+10-11 02:28:13.016 E/KILL    (27159): fastCLCS armed (gate dispatcher race-win)
+10-11 02:28:13.016 E/KILL    (27159): evalHook arming (household pre-compile source patch)
+10-11 02:28:13.016 E/KILL    (27159): HHDIAG armed (status every 5s + household routing JS dumps)
+10-11 02:28:16.018 E/KILL    (27159): HHSTATUS +3s clcs=false route2=false hh=false mhu=0/16 ads[adv=false master=false b=false dai=false] fcPass=2 hhPass=1 scans=2+2070/0 eval=0
+10-11 02:28:21.027 E/KILL    (27159): EVALHOOK armed @0xbdae526c (household edits applied to each evaluated source; defer=true nocache=0 noop=false)
+10-11 02:28:21.027 E/KILL    (27159): HHSTATUS +8s clcs=false route2=false hh=false mhu=0/16 ads[adv=false master=false b=false dai=false] fcPass=2 hhPass=2 scans=2+2768/0 eval=0
+10-11 02:28:26.029 E/KILL    (27159): HHSTATUS +13s clcs=false route2=false hh=false mhu=0/16 ads[adv=false master=false b=false dai=false] fcPass=3 hhPass=2 scans=2+3956/1956 eval=15
+10-11 02:28:28.020 E/KILL    (27159): ANCHOR MAP: A=0 A2=0 ADV=0 DAI=0 MASTER=0 B=0 FP=off GAID=off HH=0 pass=1
+10-11 02:28:31.031 E/KILL    (27159): HHSTATUS +18s clcs=false route2=false hh=false mhu=0/16 ads[adv=false master=false b=false dai=false] fcPass=3 hhPass=2 scans=2+2553/1956 eval=132
+10-11 02:28:32.859 E/KILL    (27159): PATCH CLCS(fast): gate case-labels broken x1 at +19844ms (pass 3)
+10-11 02:28:33.052 E/KILL    (27159): PATCH ADK ADV: adverts.adBreaks source r.manifest.adverts.adBreaks->[] (empty all ad breaks) @0xb64b55b7 now="ull==(h=[]                         )?void 0:h.map(function(e,t){var"
+10-11 02:28:34.249 E/KILL    (27159): PATCH ADK MASTER: else-branch e.adverts.adBreaks.map -> [].map @0xb65cee7b
+10-11 02:28:34.250 E/KILL    (27159): PATCH ADK MASTER: getAdMetadata if(t)->if(0) @0xb65cecb9 verify=OK
+10-11 02:28:36.032 E/KILL    (27159): HHSTATUS +23s clcs=true route2=false hh=false mhu=0/16 ads[adv=true master=true b=false dai=false] fcPass=4 hhPass=3 scans=2+4710/1956 eval=173
+10-11 02:28:37.852 E/KILL    (27159): PATCH HH: flag:isActiveMisdetectionSession 0->1 @0x475d26cf
+10-11 02:28:39.146 E/KILL    (27159): PATCH HH: flag:isNetflixHouseholdAvailable 0->1 @0x475d23c4
+10-11 02:28:39.148 E/KILL    (27159): PATCH HH: flag:isNetflixHouseholdAvailable 0->1 @0x475d3237
+10-11 02:28:40.546 E/KILL    (27159): PATCH HH: render:misdetectionAvailable(y) f->0 @0x475cf3f9
+10-11 02:28:41.045 E/KILL    (27159): HHSTATUS +28s clcs=true route2=false hh=false mhu=0/16 ads[adv=true master=true b=false dai=false] fcPass=4 hhPass=3 scans=2+4789/1956 eval=186
+10-11 02:28:41.880 E/KILL    (27159): PATCH HH: render:netflixHouseholdAvailable(w) h->0 @0x475cf406
+10-11 02:28:43.372 E/KILL    (27159): PATCH MHU: MHU_MANAGE_HOUSEHOLD render->null (102B decls) @0xb6796e6e
+10-11 02:28:43.374 E/KILL    (27159): PATCH MHU: MHU_RESOLUTION_LANDING render->null (104B decls) @0xb6796ff4
+10-11 02:28:43.375 E/KILL    (27159): PATCH MHU: MHU_VERIFY_TRAVEL render->null (131B decls) @0xb6797179
+10-11 02:28:43.377 E/KILL    (27159): PATCH MHU: MHU_CHALLENGE_ERROR render->null (96B decls) @0xb6798979
+10-11 02:28:43.379 E/KILL    (27159): PATCH MHU: MHU_CREATE_ACCOUNT_RENDEZVOUS_CONTEXT render->null (130B decls) @0xb67992fa
+10-11 02:28:43.380 E/KILL    (27159): PATCH MHU: MHU_CREATE_ACCOUNT_RENDEZVOUS_EMAIL render->null (128B decls) @0xb6799479
+10-11 02:28:43.381 E/KILL    (27159): PATCH MHU: MHU_CREATE_ACCOUNT_RENDEZVOUS_EMAIL_CONFIRM render->null (135B decls) @0xb67995fe
+10-11 02:28:43.382 E/KILL    (27159): PATCH MHU: MHU_CREATE_ACCOUNT_RENDEZVOUS_PHONE render->null (128B decls) @0xb6799782
+10-11 02:28:43.383 E/KILL    (27159): PATCH MHU: MHU_CREATE_ACCOUNT_RENDEZVOUS_PHONE_CONFIRM render->null (135B decls) @0xb6799907
+10-11 02:28:43.384 E/KILL    (27159): PATCH MHU: MHU_CREATE_ACCOUNT_PARTNER render->null (87B decls) @0xb6799a82
+10-11 02:28:43.385 E/KILL    (27159): PATCH MHU: MHU_SET_PRIMARY_HOUSEHOLD_VERIFY render->null (59B decls) @0xb6799e7a
+10-11 02:28:43.386 E/KILL    (27159): PATCH MHU: MHU_SET_PRIMARY_HOUSEHOLD_CONTEXT render->null (71B decls) @0xb6799fb4
+10-11 02:28:43.387 E/KILL    (27159): PATCH MHU: MHU_SET_PRIMARY_HOUSEHOLD_EMAIL_CONFIRM render->null (84B decls) @0xb679a10a
+10-11 02:28:43.388 E/KILL    (27159): PATCH MHU: MHU_SET_PRIMARY_HOUSEHOLD_LATER render->null (69B decls) @0xb679a239
+10-11 02:28:43.389 E/KILL    (27159): PATCH MHU: MHU_SET_PRIMARY_HOUSEHOLD_TEXT_CONFIRM render->null (84B decls) @0xb679a38a
+10-11 02:28:43.390 E/KILL    (27159): PATCH MHU: MHU_SET_PRIMARY_HOUSEHOLD_SUCCESS render->null (71B decls) @0xb679a4ba
+10-11 02:28:44.429 E/KILL    (27159): fastHH: all HH anchors flipped by pass 3 at +31414ms
+10-11 02:28:45.577 E/KILL    (27159): DIAG route2 anchor RESIDENT @0x38c43487 next="v){p.next=24\nbreak}if(\"c" at +32562ms
+10-11 02:28:45.577 E/KILL    (27159): PATCH CLCS(route2): doRouteOnFetchedInterstitial !v->!0 (playback interstitial -> exit) @0x38c43487
+10-11 02:28:46.047 E/KILL    (27159): HHSTATUS +33s clcs=true route2=false hh=true mhu=16/16 ads[adv=true master=true b=false dai=false] fcPass=4 hhPass=3 scans=2+2511/1956 eval=186
+10-11 02:28:46.783 E/KILL    (27159): PATCH CLCS(route2): wrote x1 at +33768ms (pass 4)
+10-11 02:28:48.022 E/KILL    (27159): ANCHOR MAP: A=0 A2=0 ADV=1 DAI=0 MASTER=1 B=0 FP=off GAID=off HH=1 pass=2
+10-11 02:28:49.380 E/KILL    (27159): PATCH ADK B: pause z() displayAd->void0 @0x38c2aa85
+10-11 02:28:51.050 E/KILL    (27159): HHSTATUS +38s clcs=true route2=true hh=true mhu=16/16 ads[adv=true master=true b=true dai=false] fcPass=5 hhPass=3 scans=2+1382/1956 eval=186
+10-11 02:28:56.053 E/KILL    (27159): HHSTATUS +43s clcs=true route2=true hh=true mhu=16/16 ads[adv=true master=true b=true dai=false] fcPass=5 hhPass=4 scans=2+345/1956 eval=186
+10-11 02:29:01.055 E/KILL    (27159): HHSTATUS +48s clcs=true route2=true hh=true mhu=16/16 ads[adv=true master=true b=true dai=false] fcPass=6 hhPass=4 scans=2+1466/1956 eval=186
+10-11 02:29:06.057 E/KILL    (27159): HHSTATUS +53s clcs=true route2=true hh=true mhu=16/16 ads[adv=true master=true b=true dai=false] fcPass=7 hhPass=5 scans=2+1527/1956 eval=186

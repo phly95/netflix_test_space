@@ -1,0 +1,11 @@
+--------- beginning of main
+10-11 01:31:29.239 E/KILL    (20554): killads ready (A/A2/ADV/DAI/MASTER ad-kill + B pause, single-shot; ad+resume monitor)
+10-11 01:31:29.239 E/KILL    (20554): fastMASTER armed (getAdMetadata early race-win scanner — beat first-title pre/mid-roll)
+10-11 01:31:29.239 E/KILL    (20554): dumpMASTER armed (recon: dump getAdMetadata body if both exact+wildcard MASTER miss — #166)
+10-11 01:31:29.239 E/KILL    (20554): fastHH armed (household prompt suppression, early race-win scanner)
+10-11 01:31:29.239 E/KILL    (20554): fastCLCS armed (gate dispatcher race-win)
+10-11 01:31:29.239 E/KILL    (20554): HHDIAG armed (status every 5s + household routing JS dumps)
+10-11 01:31:32.254 E/KILL    (20554): HHSTATUS +3s clcs=false route2=false hh=false mhu=0/16 hot=0 fcPass=1 eval=0
+10-11 01:31:34.637 E/KILL    (20554): fastHH: released after 30 waits (masterDone=false)
+10-11 01:31:41.462 E/KILL    (20554): PATCH HH: render:netflixHouseholdAvailable(w) h->0 @0xba7f027a
+10-11 01:32:13.580 E/KILL    (20554): fastHH: all HH anchors flipped by pass 1
