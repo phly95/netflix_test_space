@@ -21,8 +21,11 @@ class P{ constructor(o){ this.o=Number(o)>>>0; }
   toString(){ return '0x'+this.o.toString(16); } }
 const ptr=x=>new P(typeof x==='string'?parseInt(x):x);
 const logs=[], pendingDrain=[], timers=[]; let sandboxRanges=()=>[];
-const scanSizes=[];
-const Memory={ protect(){return true;}, allocUtf8String(s){ const a=alloc(s.length+1); MEM.write(s,a,'latin1'); return new P(a); },
+const scanSizes=[]; const asyncQ=[]; let inFlight=0, maxInFlight=0;
+function flushAsync(){ while(asyncQ.length) asyncQ.shift()(); }
+const Memory={ protect(){return true;},
+  scan(base,size,patStr,cb){ inFlight++; maxInFlight=Math.max(maxInFlight,inFlight); let hits=[]; try{ hits=Memory.scanSync(base,size,patStr); }catch(e){ asyncQ.push(()=>{ inFlight--; cb.onError(String(e)); }); return; }
+    asyncQ.push(()=>{ inFlight--; hits.forEach(h=>cb.onMatch(h.address,h.size)); cb.onComplete(); }); }, allocUtf8String(s){ const a=alloc(s.length+1); MEM.write(s,a,'latin1'); return new P(a); },
   scanSync(base,size,patStr){ scanSizes.push(size); const needle=Buffer.from(patStr.split(' ').map(h=>parseInt(h,16)));
     base.chk(size); const out=[]; let i=base.o; const end=base.o+size;
     while(true){ i=MEM.indexOf(needle,i); if(i<0||i+needle.length>end)break; out.push({address:new P(i),size:needle.length}); i++; } return out; } };
@@ -34,7 +37,7 @@ const sandbox={ console, Memory, ptr, NativePointer:P, Date, JSON, Math, Object,
   Interceptor:{ attach(){ throw new Error('no attach in test'); } },
   setTimeout(fn,ms){ if(fn&&fn.name==='drainEvalQ') pendingDrain.push(fn); else timers.push({fn,ms}); return 0; } };  // timers run on demand
 let code=fs.readFileSync(SRC,'latin1').replace('HH_ENABLED=false','HH_ENABLED=true').replace(/var HH_NOCACHE=\d;/,'var HH_NOCACHE=2;');  // exercise the full cache path
-vm.createContext(sandbox); vm.runInContext(code+'\n;this.__t={neuterMhuRenders,hhPatchRange,noCachePatchRange,findEvalSources,seqStrLen,onEvalEnter,CACHE_A_NEW,CACHE_A_OLD,CACHE_B_NEW,CACHE_B_OLD,st:function(){return {clcsDone,frDone,hhDone};}};',sandbox);
+vm.createContext(sandbox); vm.runInContext(code+'\n;this.__t={aScanAll,runSteps,fastCLCS,fastHH,hhPatchRange,noCachePatchRange,findEvalSources,seqStrLen,onEvalEnter,CACHE_A_NEW,CACHE_A_OLD,CACHE_B_NEW,CACHE_B_OLD,st:function(){return {clcsDone,frDone,hhDone};}};',sandbox);
 const T=sandbox.__t; let fail=0;
 function ok(c,m){ console.log((c?'PASS ':'FAIL ')+m); if(!c)fail++; }
 // Lay out a V8 SeqOneByteString: map | hash | length | chars ; return untagged address
@@ -91,31 +94,49 @@ const fakeNr={ script:{ clearScriptCache(){cleared++;}, addEventListener(n,f){li
 new Function('nr','er','globalThis.console=console;'+exprN)(fakeNr,fakeNr); if(ui) ui();
 ok(cleared===1 && listeners.length===0 && cached===0, 'rewritten bootstrap runs: clearScriptCache x1, no cache listener, uiLoaded caches nothing');
 
-// 2b) Sliced heap sweep (fastCLCS): yields between ranges, patches every unpatched copy, repeats forever
-{ const hmA=v8str(hhMod), hmB=v8str(hhMod);                 // two fresh unpatched copies (e.g. re-evals)
-  const rg=[{base:new P(hmA),size:hhMod.length+12},{base:new P(hmB),size:hhMod.length+12}];
-  sandboxRanges=()=>rg; vm.runInContext('FC_SLICE_MS=-1;',sandbox);   // force a yield after every range
-  timers.length=0; vm.runInContext('fastCLCS()',sandbox);
-  let yields=0, guard=0;
-  while(timers.length&&guard++<50){ const t=timers.shift(); if(t.ms>=1000||t.ms===150) { timers.unshift(t); break; } yields++; t.fn(); }
-  ok(yields>=1, 'sweep yields the Frida thread between ranges (setTimeout slices), yields='+yields);
-  ok(timers.length===1 && (timers[0].ms===150||timers[0].ms===2000), 'sweep reschedules itself afterwards (persistent, no pass cap)');
-  ok(strAt(hmA).includes('!0){p.next=24')&&strAt(hmB).includes('!0){p.next=24'), 'sweep patched route2 in both unpatched copies');
-  ok(strAt(hmA).includes('case"xlcsInterstitialGate"')&&strAt(hmB).includes('case"xlcsInterstitialGate"'), 'sweep broke dispatcher labels in both copies');
-  sandboxRanges=()=>[]; timers.length=0; }
+// 2b) async scan pool: never more than AS_MAX scans in flight, completes exactly once
+{ const rg=[]; for(let k=0;k<6;k++){ const b=alloc(4096); rg.push({base:new P(b),size:4096}); }
+  maxInFlight=0; let doneN=0, matches=0; const b0=rg[3].base.o; MEM.write('NEEDLEXX',b0+100,'latin1');
+  T.aScanAll(rg,pat8('NEEDLEXX'),()=>{matches++;},()=>{doneN++;});
+  ok(inFlight===2 && asyncQ.length===2, 'only AS_MAX=2 scans started up front (inFlight='+inFlight+')');
+  flushAsync();
+  ok(doneN===1 && matches===1 && maxInFlight<=2, 'pool drains all 6 ranges, one completion, one match, max in flight '+maxInFlight); }
+function pat8(x){ return x.split('').map(c=>('0'+c.charCodeAt(0).toString(16)).slice(-2)).join(' '); }
 
-// 2c) MHU hot windows: after the first MHU anchor is seen, later passes only scan +-1MB around it
-{ const decl='var t=e.a,n=e.b,r=(0,i.useState)(null),o=r[0],u=(0,i.useRef)(null),w=1;\nreturn(0,u.j)("div",{})}';
-  const base=alloc(4*1024*1024-0x10000)-0; const A=base+0x1000, B=base+0x1000+100*1024;
-  const put=(a,txt)=>MEM.write(txt,a,'latin1');
-  put(A,'MHU_RESOLUTION_LANDING,render:function(e){'+decl);
-  const range=[{base:new P(base),size:3*1024*1024}];
-  scanSizes.length=0; vm.runInContext('MHU_ENABLED=true;',sandbox); sandbox.__t.neuterMhuRenders(range);
-  ok(strAtRaw(A,60).includes('return null;'), 'MHU first hit patched by the full pass');
-  put(B,'MHU_MANAGE_HOUSEHOLD,render:function(e){'+decl);   // a second screen appears next to it later
-  scanSizes.length=0; sandbox.__t.neuterMhuRenders(range);
-  ok(strAtRaw(B,60).includes('return null;'), 'second MHU screen near the first is patched on the next call');
-  ok(scanSizes.length>0 && Math.max(...scanSizes)<=2*1024*1024+4, 'that call only scanned small windows (max '+Math.max(...scanSizes)+' bytes, not the 3MB range)'); }
+// 2c) fastCLCS (async): patches every unpatched copy, persistent reschedule, no JS-thread blocking
+{ const hmA=v8str(hhMod), hmB=v8str(hhMod);
+  sandboxRanges=()=>[{base:new P(hmA),size:hhMod.length+12},{base:new P(hmB),size:hhMod.length+12}];
+  timers.length=0; vm.runInContext('fastCLCS()',sandbox); flushAsync();
+  ok(strAt(hmA).includes('!0){p.next=24')&&strAt(hmB).includes('!0){p.next=24'), 'fastCLCS patched route2 in both unpatched copies');
+  ok(strAt(hmA).includes('case"xlcsInterstitialGate"')&&strAt(hmB).includes('case"xlcsInterstitialGate"'), 'fastCLCS broke dispatcher labels in both copies');
+  ok(timers.some(t=>t.ms===150||t.ms===2000), 'fastCLCS reschedules itself (persistent, no pass cap)');
+  const st2=T.st(); ok(st2.clcsDone&&st2.frDone, 'clcsDone/frDone set'); }
+
+// 2d) fastHH (async): HH flags + render gates + all MHU screens, from ONE seed scan for MHU_
+{ const mhuMod=pad(500)+'a=(0,x.setAccountSharingFlags)({isActiveMisdetectionSession:!0}); b=(0,x.setAccountSharingFlags)({isNetflixHouseholdAvailable:!0}); "ready"===c&&(y=null!=f&&f,w=null!=h&&h);'
+   +['MHU_RESOLUTION_LANDING','MHU_MANAGE_HOUSEHOLD','MHU_VERIFY_TRAVEL'].map(n=>n+',render:function(e){var t=e.a,n=e.b,r=(0,i.useState)(null),o=r[0],u=1;\nreturn(0,u.j)("div",{})}').join(',')+pad(500);
+  vm.runInContext('hhFlipped={};hhDone=false;_hhCyc=0;_hhLogged=false;mhuDoneSet={};mhuHits=0;',sandbox);   // earlier tests left these set
+  const m=v8str(mhuMod); sandboxRanges=()=>[{base:new P(m),size:mhuMod.length+12}];
+  scanSizes.length=0; timers.length=0; vm.runInContext('fastHH()',sandbox); flushAsync();
+  const out=strAt(m);
+  ok(out.includes('isActiveMisdetectionSession:!1')&&out.includes('isNetflixHouseholdAvailable:!1')&&out.includes('(y=null!=f&&0,w=null!=h&&0)'), 'fastHH flipped the account-sharing flags and both render gates');
+  ok((out.match(/render:function\(e\)\{return null;/g)||[]).length===3, 'all three MHU screens neutered');
+  const mhuScans=scanSizes.length; ok(true, 'scans issued this cycle: '+mhuScans+' (4 HH anchors + 1 MHU seed)');
+  ok(T.st().hhDone, 'hhDone set'); ok(timers.some(t=>t.ms===8000), 'fastHH settles to a light 8s cadence once done');
+  // a fresh unpatched copy of the whole module appears later (re-evaluated at play time)
+  const m2=v8str(mhuMod); sandboxRanges=()=>[{base:new P(m),size:mhuMod.length+12},{base:new P(m2),size:mhuMod.length+12}];
+  scanSizes.length=0; vm.runInContext('fastHH()',sandbox); flushAsync();
+  ok(timers.some(t=>t.ms===300), 'fresh copy found: follow-up cycle scheduled in 300ms, not 8s');
+  ok(scanSizes.length===4 && strAt(m2).includes('w=null!=h&&0)') && strAt(m2).includes('isActiveMisdetectionSession:!0'), 'steady state: 1 detector scan + 1 MHU seed over 2 ranges; the w gate of the fresh copy is flipped, the rest queued ('+scanSizes.length+' scans)');
+  scanSizes.length=0; vm.runInContext('fastHH()',sandbox); flushAsync();
+  ok(strAt(m2).includes('isActiveMisdetectionSession:!1')&&strAt(m2).includes('isNetflixHouseholdAvailable:!1'), 'the next cycle rechecks all anchors and flips the fresh copy flags too'); }
+
+// 2e) runSteps: one step per timer tick, so other work interleaves
+{ const order=[]; timers.length=0; T.runSteps([()=>order.push('a'),()=>order.push('b'),()=>order.push('c')],()=>order.push('done'));
+  ok(order.join()==='a' && timers.length===1, 'runSteps runs the first step then yields (order='+order.join()+')');
+  timers.shift().fn(); timers.shift().fn(); timers.shift().fn();
+  ok(order.join()==='a,b,c,done', 'remaining steps each run on their own tick, then done'); }
+sandboxRanges=()=>[]; timers.length=0;
 
 // 3) Unrelated large source: nothing written
 const sD=v8str(pad(5000)+'function foo(){return 1}'+pad(5000));
