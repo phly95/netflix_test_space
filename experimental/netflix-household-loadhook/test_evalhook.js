@@ -167,8 +167,12 @@ sandboxRanges=()=>[]; timers.length=0;
 // 2e') the eval hook patches the AD code in a fresh source too (same handlers), and its jobs jump the queue
 { const advSrc2='r.adverts=(0,m._)({},r.manifest.adverts,{adBreaks:(null==(h=r.manifest.adverts.adBreaks)?void 0:h.map(function(e,t){var i=c.normalize(e.locationMs),n=(0,tO.$b)(e.ads);return 1}))})';
   const m3=v8str(pad(200)+advSrc2+pad(200)); vm.runInContext('advDone=false;',sandbox);
+  const nAd0=hookPatch(new P(m3+12), MEM.readUInt32LE(m3+8), '#ad0');
+  ok(nAd0===0 && strAt(m3).includes('null==(h=r.manifest.adverts.adBreaks)?void 0:h.map'), 'hook leaves the adverts normaliser alone by default (ADV is opt-in)');
+  vm.runInContext('ADK_ADV_ENABLED=true;hhJobs0=null;',sandbox);                 // the hook job list is built once: rebuild it
   const nAd=hookPatch(new P(m3+12), MEM.readUInt32LE(m3+8), '#ad');
-  ok(nAd>=1 && /null==\(h=\[\] +\)\?void 0:h\.map/.test(strAt(m3)), 'hook patched the adverts normaliser in a fresh source ('+nAd+' edit)');
+  ok(nAd>=1 && /null==\(h=\[\] +\)\?void 0:h\.map/.test(strAt(m3)), 'with ADK_ADV_ENABLED the hook patches the adverts normaliser in a fresh source ('+nAd+' edit)');
+  vm.runInContext('ADK_ADV_ENABLED=false;hhJobs0=null;',sandbox);
   // priority: hook (0) beats household sweeps (1) when a slot frees
   scanCalls.length=0; const rr2=[]; for(let k=0;k<4;k++) rr2.push({base:new P(alloc(4096)),size:4096});
   T.aScanAll(rr2,pat8('SWEEPSWEEP'),()=>{},()=>{});               // priority 1: 2 start, 2 queue
@@ -182,7 +186,7 @@ sandboxRanges=()=>[]; timers.length=0;
   const masterBody='var t=this.ntsManager.getAds(e);if(t){var i,n,r,s=!!(null==(r=e.manifest)||null==(n=r.adverts)?void 0:n.daiSupported);i=t.map(function(e){return new eX(e,ed({canHydrate:s,isHydrated:!1,isSkippable:!1}))}),i=this.defaultAdBreakEnricher.enrichAds(i,e),i=this.applyDaiPrefetch(i,e);var a=(0,z.Us)(e)&&e.isOrWasLive;e.adverts&&e.adverts.adBreaks.length&&(!a||this.config.enableLivePreRolls)&&(i=this.mergeReplacedAds(e.adverts,i,e))}else{if(!e.adverts||!e.adverts.adBreaks.length)return;i=e.adverts.adBreaks.map(function(e){var t,i=(0,em.ik)(e);return new eX(i,ed({isHydrated:!!i.ads||i.embedded,canHydrate:!!i.adBreakToken&&!i.embedded,isPreroll:null!=(t=i.isPreroll)&&t}))})}return i=this.adBreakHydrator.enrichAds(i,e)';
   const mod=pad(300)+advSrc+pad(200)+'function G(e){'+masterBody+'}'+pad(200)+'x=e.advs?void 0:e.displayAd; y=function(){return e&&0!==e.size?a.map(function(a){return a})}'+pad(200);
   const mm=v8str(mod); sandboxRanges=()=>[{base:new P(mm),size:mod.length+12}];
-  vm.runInContext('advDone=false;masterDone=false;bDone=false;daiDone=false;',sandbox);
+  vm.runInContext('ADK_ADV_ENABLED=true;advDone=false;masterDone=false;bDone=false;daiDone=false;',sandbox);   // 2f exercises ADV too
   // `void 0:e.displayAd` / DAI anchors need their exact forms:
   const mod2=mod.replace('x=e.advs?void 0:e.displayAd;','x=e.advs?void 0:e.displayAd;').replace('y=function(){return e&&0!==e.size?a.map(function(a){return a})}','y=function(){return e&&0!==e.size?a.map(function(a){return a})}');
   timers.length=0; vm.runInContext('fastADK()',sandbox); flushAsync();
@@ -208,7 +212,25 @@ sandboxRanges=()=>[]; timers.length=0;
   ok(Array.isArray(run(origFn,null,evAds))&&run(origFn,null,evAds).length===2, 'original: DAI ad breaks produce 2 ad breaks (the leak)');
   ok(Array.isArray(run(patchedFn,null,evAds))&&run(patchedFn,null,evAds).length===0, 'patched: same input yields an EMPTY array (no ads, no crash)');
   ok(run(origFn,legacyAds,evAds).length>0 && run(patchedFn,legacyAds,evAds).length===0, 'patched: legacy getAds() ads are suppressed too');
-  ok(run(origFn,null,evNone)===undefined && run(patchedFn,null,evNone)===undefined, 'ad-free content: both return undefined (original ad-free path unchanged)');
+  ok(run(origFn,null,evNone)===undefined && Array.isArray(run(patchedFn,null,evNone)) && run(patchedFn,null,evNone).length===0, 'ad-free content: original returns undefined, patched returns a valid empty array (the verified v2 `else b=[]` shape)');
+  // killlog8 REGRESSION: with ADV applied adverts.adBreaks is always empty; the old kept `return;` guard then
+  // returned undefined for every title (ad titles included). The patched function must still yield [].
+  const evEmptied={manifest:{adverts:{}}, adverts:{adBreaks:[]}};
+  ok(Array.isArray(run(patchedFn,legacyAds,evEmptied)) && run(patchedFn,legacyAds,evEmptied).length===0 && Array.isArray(run(patchedFn,null,evEmptied)), 'with ADV applied (adBreaks empty) an ad title still yields [] — never undefined');
+  const oldFn=mk(out.replace('length)      ;i=','length)return;i='));
+  ok(run(oldFn,legacyAds,evEmptied)===undefined, 'sensitivity: the previous kept-return guard returns undefined in exactly that state (this is what leaked ads)');
+  ok(/length\)      ;i=\[\] +\.map/.test(out), 'the early return became a 7-byte no-op, length preserved');
+
+  // default config (ADV off): normaliser untouched, getAdMetadata still neutralised, second pass idempotent
+  vm.runInContext('ADK_ADV_ENABLED=false;advDone=false;masterDone=false;bDone=false;daiDone=false;_adkN=0;',sandbox);
+  const mm2=v8str(mod); sandboxRanges=()=>[{base:new P(mm2),size:mod.length+12}];
+  timers.length=0; vm.runInContext('fastADK()',sandbox); flushAsync(); const out2=strAt(mm2);
+  ok(out2.includes('null==(h=r.manifest.adverts.adBreaks)?void 0:h.map') && !vm.runInContext('advDone',sandbox), 'default config: the manifest normaliser (ADV) is left intact');
+  ok(out2.includes('getAds(e);if(0){') && /length\)      ;i=\[\] +\.map\(function\(e\)\{var t,i=\(0,em\.ik\)\(e\)/.test(out2), 'default config: getAdMetadata neutralised (if(0), no-op guard, [] map source)');
+  const fn2=mk(out2);
+  ok(run(fn2,legacyAds,evAds).length===0 && run(fn2,null,evAds).length===0 && Array.isArray(run(fn2,null,evNone)), 'default config: legacy ads, manifest breaks and ad-free titles all yield []');
+  const snap2=out2; vm.runInContext('fastADK()',sandbox); flushAsync();
+  ok(strAt(mm2)===snap2 && vm.runInContext('masterDone',sandbox), 'a second ad-kill pass over a patched copy writes nothing');
   sandboxRanges=()=>[]; timers.length=0; }
 
 // 2g) scheduler fixes from killlog5-7: household/ad-kill share the pool, big ranges first, ad-kill held until
@@ -242,18 +264,18 @@ sandboxRanges=()=>[]; timers.length=0;
   vm.runInContext(rst,sandbox); scanCalls.length=0; timers.length=0; logs.length=0;
   vm.runInContext('fastADK()',sandbox);
   ok(scanCalls.length===0&&timers.some(t=>t.ms===500)&&vm.runInContext('adkHold()',sandbox)===true, 'ad-kill held while household has not landed (no scans, re-check in 500ms)');
-  vm.runInContext('clcsDone=true;hhDone=true;frDone=true;',sandbox); vm.runInContext('fastADK()',sandbox);
-  ok(scanCalls.length===0, 'still held while the MHU screens have not been neutered (mhuHits=0)');
-  vm.runInContext('mhuHits=3;',sandbox); vm.runInContext('fastADK()',sandbox); flushAsync();   // pool runs 2 at a time: drain to count them all
-  ok(scanCalls.length===4&&logs.some(l=>/^fastADK: starting at \+\d+ms \(household landed=true/.test(l)), 'released once dispatcher+HH+route2+MHU landed: first cycle = ADV, MASTER, B, DAI (4 scans)');
+  vm.runInContext('clcsDone=true;hhDone=true;',sandbox); vm.runInContext('fastADK()',sandbox);
+  ok(scanCalls.length===0, 'still held until route 2 has landed too');
+  vm.runInContext('frDone=true;',sandbox); vm.runInContext('fastADK()',sandbox); flushAsync();   // pool runs 2 at a time: drain to count them all
+  ok(scanCalls.length===3&&vm.runInContext('mhuHits',sandbox)===0&&logs.some(l=>/^fastADK: starting at \+\d+ms \(household landed=true/.test(l)), 'released once dispatcher+HH+route2 landed, with NO MHU screens (killlog8: mhu=0/16): first cycle = MASTER, B, DAI (3 scans; ADV is opt-in)');
   vm.runInContext(rst+'_fcT0=Date.now()-31000;',sandbox); scanCalls.length=0; logs.length=0;
   vm.runInContext('fastADK()',sandbox);
   ok(scanCalls.length>0&&logs.some(l=>/household landed=false/.test(l)), 'safety timeout: ad-kill starts after 30s even if a household layer never lands'); flushAsync();
 
   // steady-state cadence: ADV+MASTER always, B every 4th cycle, DAI only early and every 12th
-  vm.runInContext('advDone=true;masterDone=true;bDone=true;_adkStarted=true;clcsDone=true;hhDone=true;frDone=true;mhuHits=3;_fcT0=Date.now();',sandbox);
+  vm.runInContext('ADK_ADV_ENABLED=false;masterDone=true;bDone=true;_adkStarted=true;clcsDone=true;hhDone=true;frDone=true;mhuHits=3;_fcT0=Date.now();',sandbox);
   const cnt=(n)=>{ vm.runInContext('_adkN='+(n-1),sandbox); scanCalls.length=0; vm.runInContext('fastADK()',sandbox); flushAsync(); return scanCalls.length; };
-  ok(cnt(3)===2&&cnt(5)===2&&cnt(8)===3&&cnt(12)===4, 'steady state: 2 scans/cycle, +B every 4th, +DAI every 12th');
+  ok(cnt(3)===1&&cnt(5)===1&&cnt(8)===2&&cnt(12)===3, 'steady state: 1 scan/cycle (MASTER), +B every 4th, +DAI every 12th');
   timers.length=0; cnt(5); ok(timers.some(t=>t.ms===8000), 'steady-state ad-kill cadence is 8s');
 
   // hook diagnostics: walk result counters + EVALSRC lines + HHSTATUS fields
@@ -267,6 +289,17 @@ sandboxRanges=()=>[]; timers.length=0;
   while(pendingDrain.length) pendingDrain.shift()(); flushAsync();
   logs.length=0; vm.runInContext('hhStatus()',sandbox);
   ok(logs.some(l=>/^HHSTATUS .*scans=\d+\+\d+\/\d+\/\d+ \(household\/ads\/diag\) eval=\d+\/\d+src adk=(on|held|idle)/.test(l)), 'HHSTATUS shows per-family queues, eval calls/located sources and the ad-kill state');
+  // ADDIAG: dumps the ad consumers once the ad-kill has started; telemetry hits become short DATA windows
+  { const jsCtx='function f(e){var t=this.adBreakHydrator.enrichAds(e);if(t){for(var i=0;i<t.length;i++){t[i].emptyAdBreakComplete=function(){return 1}}}return t}';
+    const dataCtx='{"type":["DebugEvent"],"message":"emptyAdBreakComplete","id":123,"sequence":9}';
+    const dtxt=pad(400)+jsCtx+pad(1500)+dataCtx+pad(400); const dm=v8str(dtxt); sandboxRanges=()=>[{base:new P(dm),size:dtxt.length+12}];
+    vm.runInContext('_adkStarted=false;',sandbox); timers.length=0; vm.runInContext('adDiag()',sandbox);
+    ok(timers.some(t=>t.ms===2000), 'ADDIAG waits until the ad-kill has started');
+    vm.runInContext('_adkStarted=true;_addN=0;addSeen={};addCount={};addData={};',sandbox); logs.length=0; vm.runInContext('adDiag()',sandbox); flushAsync();
+    ok(logs.some(l=>/^ADDIAG emptyAdBreakComplete #1 @/.test(l)) && logs.some(l=>/^ADDIAG-DATA emptyAdBreakComplete #1 @/.test(l)), 'ADDIAG dumps the JS-source hit and a short window for the telemetry hit');
+    ok(timers.some(t=>t.ms===15000), 'markers still missing a dump are retried in 15s');
+    vm.runInContext('_addN=3;',sandbox); logs.length=0; vm.runInContext('adDiag()',sandbox); flushAsync();
+    ok(logs.some(l=>/^ADDIAG done after 4 passes/.test(l)), 'ADDIAG stops after 4 passes'); }
   sandboxRanges=()=>[]; timers.length=0; vm.runInContext('AS_MIN_RANGE=0;',sandbox); }
 
 // 3) Unrelated large source: nothing written

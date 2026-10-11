@@ -172,3 +172,42 @@ Changes made for build P (host tests: `node test_evalhook.js ../../patches/src/m
 Next device run: capture through profile select and **two** plays, and note the wall-clock time of each press.
 Acceptance vs killlog5: gate <= +15.6s, HH/MHU landed before the select, route 2 <= +26.6s, ADV/MASTER
 within ~10s after `fastADK: starting`.
+
+## killlog8 (build P): household fixed, ads still leaking (2026-10-11)
+
+**Household: no prompt.** Dispatcher +17.5s, HH flags +18.6-23.5s, `fastADK` held until +30.0s (that was the
+30s safety timeout: it also required MHU, which stayed `0/16` all session; MHU is only the blank-screen fallback and
+the dispatcher + HH flags + route 2 sufficed, so build Q no longer requires it; route 2 landed +30.2s), then ADV +31.4s, MASTER +35.3s, B +40.3s. At +41-43s the sweep found and patched **51 fresh copies** of the
+dispatcher text in small (48KB) ranges: a profile switch re-creates module text, and the sweeps beat it.
+`RANGEHIT` sizes: dispatcher 1.9MB and 48KB, HH flags/render 256KB, route 2 and B 564KB, ad modules 4.6MB; 79 of
+the 191 scanned ranges (>=32K) hold 224 of 236MB. Keep `AS_MIN_RANGE`=32K (a 256K floor would have missed the 48KB
+fresh copies); big-first ordering is the useful part.
+
+**Ads: leaked in pre-roll and mid-roll although every ad edit landed before the first play**, and no fresh player
+copy appeared afterwards (the ad detector re-matched only the already-patched copy). So the edits ran but were not
+enough. Root cause found by reading the code against the design notes: with ADV2 applied
+`adverts.adBreaks.length` is always 0, so MASTER2's kept `if(!e.adverts||!e.adverts.adBreaks.length)return;` guard
+fired for every title and `getAdMetadata` returned **undefined**: the half-emptied state the notes forbid
+("return a valid empty, never undefined"; the old M2 was `else b=[]`). The host test missed it because it fed the
+function a populated `adBreaks`. Not yet confirmed on device.
+
+Build Q changes:
+1. MASTER2 now also turns the early `return;` into a 7-byte no-op, so every title yields `[]` (order: map
+   source, guard, then `if(0)` last). New tests cover the ADV-emptied state and show the old guard returns
+   undefined in it.
+2. ADV2 is opt-in (`ADK_ADV_ENABLED=false`): the proven config killed ads with MASTER alone and left the
+   manifest normaliser intact; ADV removes the breaks themselves, which the Aug notes link to `tvq-pb-101`.
+3. `ADDIAG` (read-only recon on the ad queue, after the ad-kill starts): dumps the JS around `getAdMetadata`,
+   `emptyAdBreakComplete`, `enrichAdsWithEmbeddedExtension`, `createAdsPlaygraph`, `_syncAdsLength`,
+   `prepareAdBreakStates`, `StatefulAdBreak`; telemetry hits become short `ADDIAG-DATA` windows (they show
+   whether e.g. `emptyAdBreakComplete` fired). Also logs the full patched `getAdMetadata` body once
+   (`ADK MASTER body (patched)`), so the return expression and the consumers can be read next time.
+4. `HH_DUMPS=false`: the household routing dumps (already captured in killlog5) no longer queue 2000 diagnostic jobs.
+
+**Eval hook finding (killlog7/8):** the String walk works but only for evals that pass a String: 22 of 776 evals
+located a source (MSL `headerdata` JSON, a 337KB `FX2Modules` bundle, a 231KB bootstrap), none with an anchor. The
+big modules come through `nrdp.gibbon.loadScript`, which sets `format="uint8array"`, so `eval` receives a
+**Uint8Array backing store, not a String**; the walk cannot see those. A hook that handles typed arrays (find the
+JSArrayBuffer backing pointer + byte length) is the next step if a pre-compile hook is still wanted; with the sweeps
+catching fresh copies it is no longer needed for household. Build Q ships with the hook off (repo default).
+
