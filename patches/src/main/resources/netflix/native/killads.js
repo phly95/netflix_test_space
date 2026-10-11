@@ -39,7 +39,7 @@ var ADK_HH_PERIOD=120000;
 //    has ~550 rw- ranges, JS source lives in the big heap ranges).
 // Queues (2026-10, after killlog5-7): 0 = eval-hook sources, 1 = household sweeps, 2 = ad-kill sweeps,
 // 3 = diagnostics. killlog6/7 (fastADK added) showed the household layers landing ~10s later than the
-// household-only build (killlog5): one ad-kill cycle (4 sweeps, ~2000 range jobs) sat ahead of the household
+// household-only build (killlog5): the ad-kill sweeps (4 per cycle, 191 range jobs each) sat ahead of the household
 // pass in the single FIFO queue. Now (a) fastADK is held until household has landed (adkHold, below), and
 // (b) once both families are queued they SHARE the pool: whichever family has fewer scans running goes next,
 // so neither can starve the other (strict household priority starved the ad-kill in steady state: the
@@ -1012,7 +1012,7 @@ setTimeout(fastMASTER,200);
 L('dumpMASTER armed (recon: dump getAdMetadata body if both exact+wildcard MASTER miss — #166)');
 setTimeout(dumpMASTER,2000);
 }
-if(HH_ENABLED){ L('fastADK armed (async ad-kill: ADV2 + MASTER2 + B + DAI, rename-tolerant)'); setTimeout(fastADK,300); }
+if(HH_ENABLED){ L('fastADK armed (async ad-kill: '+(ADK_ADV_ENABLED?'ADV2 + ':'')+'MASTER2 + B + DAI, rename-tolerant; starts after household lands)'); setTimeout(fastADK,300); }
 if(HH_ENABLED){ L('fastHH armed (household prompt suppression, early race-win scanner)'); setTimeout(fastHH,200);
 }
 if(CLCS_PROBE_ENABLED){ L('clcsProbe armed (DEV recon: locate runtime CLCS interstitial consumer — Nikflix seam)'); setTimeout(clcsProbe,200); }
