@@ -143,9 +143,11 @@ only `HH_ENABLED=true`, no eval hook, no cache patch) — household suppression 
 | Ad-kill ADV / MASTER | not running | 19.3 / 20.7 | 20.0 / 21.2 |
 
 - Everything but the dispatcher slid ~10s. Sweep backlog at +18s was 2,963 jobs (killlog5) vs 5,002
-  (killlog6): the 2,039 difference is one ad-kill cycle (4 sweeps x ~510 ranges) sitting ahead of the
-  household pass in the single FIFO queue. In killlog6/7 the pool never drained (diagnostic queue stuck at
-  ~1,960 jobs, 0 HHDIAG dumps vs 18 in killlog5).
+  (killlog6). *Correction (2026-10-11, later):* a sweep is only 191 jobs (RANGESTAT: 191 of 595 rw- ranges are
+  >=32K), not the ~510 first assumed, so the 2,039-job difference is ~10 sweeps, more than one ad-kill cycle.
+  The ad-kill sweeps queued ahead of the household passes in the single FIFO queue are still the best-supported
+  cause (inference), and fixing that restored killlog5 timings in killlog9. In killlog6/7 the pool never drained
+  (diagnostic queue stuck at ~1,960 jobs, 0 HHDIAG dumps vs 18 in killlog5).
 - The playback code (route 2) and `getAdMetadata` are resident at boot, not loaded on play, so a video-start
   check runs through the already-patched copy *if route 2 landed first*. The exposed window is a play before
   route 2 lands (+26.6s good, +36.5s bad). Whether a later play re-evaluates the module is still unproven.
@@ -177,11 +179,13 @@ within ~10s after `fastADK: starting`.
 
 **Household: no prompt.** Dispatcher +17.5s, HH flags +18.6-23.5s, `fastADK` held until +30.0s (that was the
 30s safety timeout: it also required MHU, which stayed `0/16` all session; MHU is only the blank-screen fallback and
-the dispatcher + HH flags + route 2 sufficed, so build Q no longer requires it; route 2 landed +30.2s), then ADV +31.4s, MASTER +35.3s, B +40.3s. At +41-43s the sweep found and patched **51 fresh copies** of the
-dispatcher text in small (48KB) ranges: a profile switch re-creates module text, and the sweeps beat it.
+the dispatcher + HH flags + route 2 sufficed, so build Q no longer requires it; route 2 landed +30.2s), then ADV +31.4s, MASTER +35.3s, B +40.3s. At +41-43s the sweep found and patched **51 more copies** of the
+dispatcher anchor in small (48KB) ranges (`PATCH CLCS(fast): ... x51`). Cause **unconfirmed**: it may be fresh module
+text re-created by the profile switch, or copies in the Frida runtime's own heap (the script text contains the
+anchor literal). killlog9 shows no such event, so do not rely on it.
 `RANGEHIT` sizes: dispatcher 1.9MB and 48KB, HH flags/render 256KB, route 2 and B 564KB, ad modules 4.6MB; 79 of
-the 191 scanned ranges (>=32K) hold 224 of 236MB. Keep `AS_MIN_RANGE`=32K (a 256K floor would have missed the 48KB
-fresh copies); big-first ordering is the useful part.
+the 191 scanned ranges (>=32K) hold 224 of 236MB. Keep `AS_MIN_RANGE`=32K (a 256K floor would have missed those 48KB
+hits); big-first ordering is the useful part.
 
 **Ads: leaked in pre-roll and mid-roll although every ad edit landed before the first play**, and no fresh player
 copy appeared afterwards (the ad detector re-matched only the already-patched copy). So the edits ran but were not
@@ -211,3 +215,13 @@ big modules come through `nrdp.gibbon.loadScript`, which sets `format="uint8arra
 JSArrayBuffer backing pointer + byte length) is the next step if a pre-compile hook is still wanted; with the sweeps
 catching fresh copies it is no longer needed for household. Build Q ships with the hook off (repo default).
 
+## killlog9 (build Q): household fine, the main ad kill never landed (2026-10-11)
+
+Household timings are back to the last-good build (dispatcher +15.6s, HH flags +16.7s, route 2 +27.2s; MHU 16/16),
+no prompt. `fastADK` started at +27.6s (the "household landed" condition, no timeout) and only B landed (+32s).
+**No `PATCH ADK MASTER` line at all and `master=false` through +183s**: the `getAds(?);if(?){var ` pattern never
+matched, so Q's MASTER2 fix has not run on a device. The ADDIAG recon found `getAdMetadata`, `StatefulAdBreak`,
+`emptyAdBreakComplete`, `_syncAdsLength` and `prepareAdBreakStates` only inside method-name tables (compiled
+class data), never in source text, while in killlog8 the same text sat in a 4.6MB range. The user saw one ad at the
+start of the first episode, which matches Netflix's normal ad-tier pre-roll and cannot be credited to the kill.
+Full analysis, hypotheses and next steps: `docs/NETFLIX_HOUSEHOLD_ADKILL_2026-10_HANDOFF.md`.

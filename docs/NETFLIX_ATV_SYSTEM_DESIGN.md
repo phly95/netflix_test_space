@@ -10,6 +10,8 @@ Netflix (Android TV) Ad & Playback System Design — A Reverse-Engineering Analy
 > **Scope and credit.** This is an **Android TV** teardown: a native monolith (`libnetflix.so`), an in-process JS engine, and an on-device byte-patch delivered through a cloned app. It is **not** the Netflix *web* app. The canonical web-architecture teardown is **sshh12's** [Netflix System Design, reverse-engineered from live network traffic](https://gist.github.com/sshh12/dda3a89514f850c459380b18b1f7eb7b) (Akira, Cadmium, Shakti, Pinot, MSL, FTL, Ichnaea…), and this analysis builds on that naming and the MSL model. Where the two overlap (MSL, the manifest, Pinot pages) we reuse sshh12's terms; the ATV-specific mechanism and the patch are our own.
 
 > **Applies to** `com.netflix.ninja` `13.0.1 build 25028`, patches **v1.37.4**. Netflix's ad logic is **downloaded JavaScript**, re-minified server-side without an app update, so exact byte anchors drift (see §9); the shipped strip carries rename-tolerant fallbacks for exactly that reason.
+>
+> **2026-10 update (household + ad-kill).** The household-prompt work and the async ad-kill changed after this was written: see [`NETFLIX_HOUSEHOLD_ADKILL_2026-10_HANDOFF.md`](NETFLIX_HOUSEHOLD_ADKILL_2026-10_HANDOFF.md) and [`NETFLIX_KILLADS_ARCHITECTURE.md`](NETFLIX_KILLADS_ARCHITECTURE.md). Household suppression is device-verified; the §5 ad kill is **not** verified on the current JS (the main `getAdMetadata` edit did not land in the last log), and the eval load-hook in §10 patches nothing yet.
 
 ---
 
