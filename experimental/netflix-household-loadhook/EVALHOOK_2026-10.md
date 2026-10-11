@@ -3,6 +3,11 @@
 Target: Netflix ATV `13.0.1 build 25028` (armeabi-v7a). Built and host-tested only. **Not yet
 verified on a device.**
 
+> **Status (2026-10-11, after device logs killlog5-7 — see the last section).** The eval hook and
+> `HH_NOCACHE` described under "Fix" below are **opt-in and off by default** (`EVALHOOK_ENABLED=false`,
+> `HH_NOCACHE=0`); the Morphe patch only flips `HH_ENABLED`. The shipping household suppression is the
+> async heap sweeps, now scheduled household-first.
+
 ## Symptom
 With "Suppress Household Prompt" on, the household prompt still shows **a second or two after an
 episode or video starts**.
@@ -121,3 +126,49 @@ synchronous scans (host repro in the table above); all household/ad scanning is 
 worker-thread scans at TOP priority (priority 0 > sweeps 1 > diagnostics 2), so a multi-MB source never blocks Netflix's
 eval thread or Frida's JS thread. Opt-in (`EVALHOOK_ENABLED`), armed `EVAL_ARM_DELAY_MS` after launch. Verify in the log:
 `EVALHOOK armed`, then `PATCH EVAL#n:` / `EVAL#n: k edit(s) applied` lines when a module is evaluated.
+
+## Device logs killlog5-7: why household came back at profile select (2026-10-11)
+
+killlog5 is build `a4ca56a` (the "K-prio" APK: its bundled script is byte-identical to that commit with
+only `HH_ENABLED=true`, no eval hook, no cache patch) — household suppression worked. killlog6 added
+`fastADK` (`02fc47d`); killlog7 also had the eval hook on (armed at +8s). Seconds after launch:
+
+| Layer | killlog5 | killlog6 (+fastADK) | killlog7 (+hook) |
+|---|---|---|---|
+| Dispatcher labels broken | 15.6 | 19.1 | 19.8 |
+| HH flags (first) | 15.6 | 25.8 | 24.8 |
+| MHU 16/16 neutered | 21.5 | 31.7 | 30.4 |
+| HH all flipped | 23.0 | 33.1 | 31.4 |
+| Route 2 written | 26.6 | 36.5 | 33.8 |
+| Ad-kill ADV / MASTER | not running | 19.3 / 20.7 | 20.0 / 21.2 |
+
+- Everything but the dispatcher slid ~10s. Sweep backlog at +18s was 2,963 jobs (killlog5) vs 5,002
+  (killlog6): the 2,039 difference is one ad-kill cycle (4 sweeps x ~510 ranges) sitting ahead of the
+  household pass in the single FIFO queue. In killlog6/7 the pool never drained (diagnostic queue stuck at
+  ~1,960 jobs, 0 HHDIAG dumps vs 18 in killlog5).
+- The playback code (route 2) and `getAdMetadata` are resident at boot, not loaded on play, so a video-start
+  check runs through the already-patched copy *if route 2 landed first*. The exposed window is a play before
+  route 2 lands (+26.6s good, +36.5s bad). Whether a later play re-evaluates the module is still unproven.
+- killlog5 HHDIAG (real routing JS): the gate-stack dispatcher (labels broken), plus direct
+  `pushClcsInterstitialGate` callers in the `growthPush` saga, the playback-exit path and
+  `pushClcsPostPlaybackInterstitialGate`; `QueryType.Lolomo` exists. killlog5 worked without covering them.
+- Eval hook (killlog7): 186 evals, **0 edits**; every patch came from the sweeps. It armed at +8s, probably
+  after the big boot modules, and it did not log whether the String walk found anything.
+- `libnetflix.so` in the working APK still has the hook prologue signature at `0x137626c` and both bootstrap
+  cache-producer strings verbatim, and contains none of the household JS (it is server-delivered).
+
+Changes made for build P (host tests: `node test_evalhook.js ../../patches/src/main/resources/netflix/native/killads.js`):
+1. `fastADK` is held until `clcsDone && hhDone && frDone && mhuHits>0` (safety timeout `ADK_HH_WAIT_MS`=30s).
+2. Four scan queues: hook 0, household 1, ad-kill 2, diagnostics 3. Once both families are queued they
+   *share* the pool (the family with fewer scans running goes next). Strict household priority was rejected:
+   the persistent household detectors alone use nearly the whole pool and would starve the ad-kill.
+3. `aScanAll` scans the biggest ranges first. `DAI` (never matched in any log) only runs in the first two
+   cycles and then every 12th; steady-state ad-kill cadence 5s -> 8s.
+4. Diagnostics: `RANGESTAT` (range count/bytes by size bucket, once), `RANGEHIT` (size of the range that held
+   each anchor), `EVALSRC#n` (length + head of located scripts, or r0-r2 when none), and HHSTATUS now shows
+   `scans=run+household/ads/diag`, `eval=calls/withSource` and `adk=held|on|idle`. Use RANGEHIT to pick
+   `AS_MIN_RANGE` from data.
+
+Next device run: capture through profile select and **two** plays, and note the wall-clock time of each press.
+Acceptance vs killlog5: gate <= +15.6s, HH/MHU landed before the select, route 2 <= +26.6s, ADV/MASTER
+within ~10s after `fastADK: starting`.

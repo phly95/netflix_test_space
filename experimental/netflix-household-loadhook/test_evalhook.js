@@ -169,7 +169,7 @@ sandboxRanges=()=>[]; timers.length=0;
   const m3=v8str(pad(200)+advSrc2+pad(200)); vm.runInContext('advDone=false;',sandbox);
   const nAd=hookPatch(new P(m3+12), MEM.readUInt32LE(m3+8), '#ad');
   ok(nAd>=1 && /null==\(h=\[\] +\)\?void 0:h\.map/.test(strAt(m3)), 'hook patched the adverts normaliser in a fresh source ('+nAd+' edit)');
-  // priority: hook (0) beats sweep (1) beats diag (2) when a slot frees
+  // priority: hook (0) beats household sweeps (1) when a slot frees
   scanCalls.length=0; const rr2=[]; for(let k=0;k<4;k++) rr2.push({base:new P(alloc(4096)),size:4096});
   T.aScanAll(rr2,pat8('SWEEPSWEEP'),()=>{},()=>{});               // priority 1: 2 start, 2 queue
   T.hhPatchSource(new P(alloc(4096)),4096,'#prio',()=>{});          // priority 0 jobs queue behind the running two
@@ -194,7 +194,7 @@ sandboxRanges=()=>[]; timers.length=0;
   ok(out.includes('return e&&0===e.size?a.map'), 'DAI prefetch guard flipped');
   const st3=vm.runInContext('({advDone,masterDone,bDone,daiDone})',sandbox);
   ok(st3.advDone&&st3.masterDone&&st3.bDone&&st3.daiDone, 'all four ad-kill flags set');
-  ok(timers.some(t=>t.ms===5000), 'once all landed, ad-kill drops to a light 5s detector cadence');
+  ok(timers.some(t=>t.ms===8000), 'once all landed, ad-kill drops to a light 8s detector cadence');
   // SEMANTICS: run the original and the patched getAdMetadata with stubs
   const mk=(txt)=>{ const body=txt.slice(txt.indexOf('function G(e){')+14, txt.indexOf('}'+pad(200)+'x=')); 
     return new Function('z','em','eX','ed',  'return function(e){'+body+'}');   };
@@ -210,6 +210,64 @@ sandboxRanges=()=>[]; timers.length=0;
   ok(run(origFn,legacyAds,evAds).length>0 && run(patchedFn,legacyAds,evAds).length===0, 'patched: legacy getAds() ads are suppressed too');
   ok(run(origFn,null,evNone)===undefined && run(patchedFn,null,evNone)===undefined, 'ad-free content: both return undefined (original ad-free path unchanged)');
   sandboxRanges=()=>[]; timers.length=0; }
+
+// 2g) scheduler fixes from killlog5-7: household/ad-kill share the pool, big ranges first, ad-kill held until
+//     household has landed, DAI only rarely, plus the new hook/range diagnostics
+{ ok(logs.some(l=>/^RANGESTAT rw-ranges=\d+ >=32K:\d+\(\d+MB\) >=256K:/.test(l)), 'RANGESTAT logged once on the first sweep');
+  ok(logs.some(l=>/^RANGEHIT \S+ rangeSize=\d+ base=0x/.test(l)), 'RANGEHIT logs the size of the range that held an anchor');
+  flushAsync(); scanCalls.length=0; scanSizes.length=0; vm.runInContext('AS_MIN_RANGE=0;',sandbox);
+  const mk=(n,sz)=>{ const a=[]; for(let k=0;k<n;k++) a.push({base:new P(alloc(sz||4096)),size:sz||4096}); return a; };
+  const HOUSE=pat8('HOUSEHOLDQ'), ADS=pat8('ADSKILLQ'), DIAG=pat8('DIAGQ');
+  // household alone gets both slots
+  T.aScanAll(mk(4),HOUSE,()=>{},()=>{});
+  ok(scanCalls.length===2&&scanCalls.every(c=>c===HOUSE), 'household alone: both slots go to household'); flushAsync();
+  // both families queued: they share (household, ads, household ...) instead of FIFO; diag only when both are empty
+  scanCalls.length=0;
+  T.aScanAll(mk(4),HOUSE,()=>{},()=>{}); T.aScanAll(mk(4),ADS,()=>{},()=>{},2); T.aScanAll(mk(2),DIAG,()=>{},()=>{},true);
+  asyncQ.shift()();                                                   // a household scan finishes -> the ad family has fewer running
+  ok(scanCalls[2]===ADS, 'both queued: when a household slot frees the ad-kill (0 running) goes next, not another household job');
+  asyncQ.shift()();
+  ok(scanCalls[3]===HOUSE, 'then household again (fair share, household wins ties)');
+  flushAsync();
+  ok(scanCalls.slice(-2).every(c=>c===DIAG), 'diagnostics only run once household and ad-kill queues are empty');
+  ok(vm.runInContext('_asRun',sandbox)===0&&vm.runInContext('_asRunP.join()',sandbox)==='0,0,0,0', 'pool counters return to zero');
+  // biggest ranges are scanned first
+  scanSizes.length=0;
+  T.aScanAll([{base:new P(alloc(4096)),size:4096},{base:new P(alloc(65536)),size:65536},{base:new P(alloc(16384)),size:16384}],pat8('ORDERQQ'),()=>{},()=>{});
+  ok(scanSizes.join()==='65536,16384', 'two largest ranges start first (got '+scanSizes.join()+')'); flushAsync();
+
+  // ad-kill hold: nothing is scanned until household has landed (or the safety timeout passes)
+  const rg1=[{base:new P(alloc(4096)),size:4096}]; sandboxRanges=()=>rg1;
+  const rst='clcsDone=false;hhDone=false;frDone=false;mhuHits=0;_adkStarted=false;_adkN=0;advDone=false;masterDone=false;bDone=false;daiDone=false;_fcT0=Date.now();';
+  vm.runInContext(rst,sandbox); scanCalls.length=0; timers.length=0; logs.length=0;
+  vm.runInContext('fastADK()',sandbox);
+  ok(scanCalls.length===0&&timers.some(t=>t.ms===500)&&vm.runInContext('adkHold()',sandbox)===true, 'ad-kill held while household has not landed (no scans, re-check in 500ms)');
+  vm.runInContext('clcsDone=true;hhDone=true;frDone=true;',sandbox); vm.runInContext('fastADK()',sandbox);
+  ok(scanCalls.length===0, 'still held while the MHU screens have not been neutered (mhuHits=0)');
+  vm.runInContext('mhuHits=3;',sandbox); vm.runInContext('fastADK()',sandbox); flushAsync();   // pool runs 2 at a time: drain to count them all
+  ok(scanCalls.length===4&&logs.some(l=>/^fastADK: starting at \+\d+ms \(household landed=true/.test(l)), 'released once dispatcher+HH+route2+MHU landed: first cycle = ADV, MASTER, B, DAI (4 scans)');
+  vm.runInContext(rst+'_fcT0=Date.now()-31000;',sandbox); scanCalls.length=0; logs.length=0;
+  vm.runInContext('fastADK()',sandbox);
+  ok(scanCalls.length>0&&logs.some(l=>/household landed=false/.test(l)), 'safety timeout: ad-kill starts after 30s even if a household layer never lands'); flushAsync();
+
+  // steady-state cadence: ADV+MASTER always, B every 4th cycle, DAI only early and every 12th
+  vm.runInContext('advDone=true;masterDone=true;bDone=true;_adkStarted=true;clcsDone=true;hhDone=true;frDone=true;mhuHits=3;_fcT0=Date.now();',sandbox);
+  const cnt=(n)=>{ vm.runInContext('_adkN='+(n-1),sandbox); scanCalls.length=0; vm.runInContext('fastADK()',sandbox); flushAsync(); return scanCalls.length; };
+  ok(cnt(3)===2&&cnt(5)===2&&cnt(8)===3&&cnt(12)===4, 'steady state: 2 scans/cycle, +B every 4th, +DAI every 12th');
+  timers.length=0; cnt(5); ok(timers.some(t=>t.ms===8000), 'steady-state ad-kill cadence is 8s');
+
+  // hook diagnostics: walk result counters + EVALSRC lines + HHSTATUS fields
+  logs.length=0; pendingDrain.length=0; vm.runInContext('_evalSrcCalls=0;_evalSrcN=0;_evalLogN=0;_evalBigN=0;_evalNoSrcLog=0;',sandbox);
+  T.onEvalEnter({r0:new P(alloc(64)), r1:new P(alloc(64)), r2:new P(alloc(64))});
+  ok(logs.some(l=>/^EVALSRC#\d+ none located r0=0x/.test(l))&&vm.runInContext('_evalSrcCalls',sandbox)===0, 'an eval with no locatable script logs its registers and is not counted');
+  const sx=v8str(pad(3000)+'function foo(){return 1}'); const vx=alloc(16); MEM.writeUInt32LE((sx|1)>>>0,vx);
+  const ix=alloc(16); MEM.writeUInt32LE(0,ix); MEM.writeUInt32LE(vx,ix+4); MEM.writeUInt32LE(1,ix+8);
+  T.onEvalEnter({r0:new P(alloc(64)), r1:new P(ix), r2:new P(alloc(64))});
+  ok(logs.some(l=>/^EVALSRC#\d+ len=3\d\d\d head="/.test(l))&&vm.runInContext('_evalSrcCalls',sandbox)===1&&vm.runInContext('_evalSrcN',sandbox)===1, 'a located script is logged (length + head) and counted');
+  while(pendingDrain.length) pendingDrain.shift()(); flushAsync();
+  logs.length=0; vm.runInContext('hhStatus()',sandbox);
+  ok(logs.some(l=>/^HHSTATUS .*scans=\d+\+\d+\/\d+\/\d+ \(household\/ads\/diag\) eval=\d+\/\d+src adk=(on|held|idle)/.test(l)), 'HHSTATUS shows per-family queues, eval calls/located sources and the ad-kill state');
+  sandboxRanges=()=>[]; timers.length=0; vm.runInContext('AS_MIN_RANGE=0;',sandbox); }
 
 // 3) Unrelated large source: nothing written
 const sD=v8str(pad(5000)+'function foo(){return 1}'+pad(5000));
