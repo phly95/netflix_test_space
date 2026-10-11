@@ -25,6 +25,14 @@ import ajstrick81.morphe.patches.netflix.shared.Constants
 // account is actually in a flagged/"misdetected" state; the patch self-reports that it
 // APPLIED via the KILL log (PATCH HH / apply DONE … HH=true).
 //
+// PLAY-TIME PROMPT (2026-10): the edits above rewrite JS source in the heap, which only works if they
+// land before V8 compiles the function. The playback household gate lives in a module Netflix loads
+// ON PLAY and runs ~1-2s later, so the polling heap sweep lost that race (prompt a second or two into
+// an episode), and a stale V8 script cache could win even when it didn't. HH_ENABLED now also arms
+// an eval load-hook in killads.js that applies the same edits to each script's source BEFORE compile,
+// disables/clears Netflix's script cache, and keeps the route-2 sweep running all session. See
+// experimental/netflix-household-loadhook/EVALHOOK_2026-10.md.
+//
 // Delivery: the pass lives in the gadget's bundled script (shipped OFF); this patch
 // just turns it on, so it composes with the ad kills without a second script. Kept as
 // its OWN opt-in (not folded into the ad kills or the privacy toggle) because it acts

@@ -1,0 +1,65 @@
+# Household prompt 1-2 s into playback — diagnosis + eval load-hook fix (2026-10)
+
+Target: Netflix ATV `13.0.1 build 25028` (armeabi-v7a). Built and host-tested only. **Not yet
+verified on a device.**
+
+## Symptom
+With "Suppress Household Prompt" on, the household prompt still shows **a second or two after an
+episode or video starts**.
+
+## Diagnosis
+1. **The heap-scan race is lost at play time.** Every household edit rewrites JS *source* in the heap,
+   which only works if it lands before V8 compiles the function (on its first call). Route 2
+   (`doRouteOnFetchedInterstitial`) lives in a module evaluated **on play**. That load, the
+   interstitial fetch and the start of playback all happen together; the reply arrives ~1-2 s later,
+   and the gate compiles from the unpatched source. Meanwhile the route-2 sweep was running at 1 s
+   intervals, each pass scanning all memory, queued behind `apply()`/`observe()` on the one Frida
+   thread (`hhYield` only covers the first 30 s after launch).
+2. **The fallback stopped too early.** `fastCLCS` stopped re-scanning route 2 after the first hit
+   (`frDone`) and gave up after 1400 passes (~20-30 min). A re-evaluated module is a fresh unpatched
+   copy, so the 2nd episode, or any play after the cap, was never patched. `fastHH` and `apply()`
+   also exit for good once done, so `neuterMhuRenders` never sees modules that load later.
+3. **The V8 script cache can override source edits.** `libnetflix.so` ships `V8ScriptCache.cpp`, and
+   its embedded bootstrap JS caches every script:
+   `nr.script.addEventListener("script",(e=>{0!==e.version&&e.usedCache||e.cache(1)}))` and, on
+   `uiLoaded`, `e.cache(100)`, which stores the bytecode compiled *so far*. V8 checks a cache against
+   its source mostly by **length**, and all our edits keep the length the same, so a stale cache
+   built from unpatched source is still accepted.
+
+## Fix (killads.js, all under the existing HH_ENABLED opt-in)
+- **EVAL load-hook.** Hooks the Gibbon2Bridge `eval` callback prologue `0x137626c`, which was proven
+  live on .211 (ABI_DECODE §7) and matches this build byte for byte; the prologue signature is checked
+  at runtime, and a mismatch means no hook. In `onEnter` it finds the script String with a bounded
+  walk (r0/r1/r2, one hop) and checks it is a V8 one-byte string (len @+8, chars @+12). It then applies
+  the CLCS dispatcher, route-2, HH flag/render and MHU edits **inside that one string only**, before
+  V8 compiles it. Each group of edits only runs if a cheap marker is present first. Every edit is
+  verify-before-write and keeps the length the same.
+- **Script cache off (`HH_NOCACHE`).** Rewrites the bootstrap's cache listener into a one-shot
+  `nr.script.clearScriptCache()` and the `uiLoaded` `e.cache(100)` into a no-op, both keeping the
+  length. This is done in the eval'd bootstrap source and in libnetflix.so's data segment. Trade-off:
+  a slightly slower warm boot.
+- **Fallback sweep.** `fastCLCS` now keeps sweeping for unpatched copies all session (rewrites are
+  safe to repeat): every 150 ms for 6 s after any eval, otherwise every 2 s.
+- Arming: `android_dlopen_ext` onLeave for libnetflix.so (before JNI_OnLoad), plus a 100 ms poll as
+  a backstop.
+
+## Verify on device
+`adb logcat -s KILL:*`, then look for:
+- `EVALHOOK armed @…`. A `prologue signature mismatch` line means a different Netflix build, so only
+  the heap-scan fallback runs.
+- `PATCH EVAL(so): script cache listener -> clearScriptCache()` and/or `PATCH EVAL#n: …`.
+- On play: `PATCH EVAL#n: route2 doRouteOnFetchedInterstitial !v->!0` should appear **before** the
+  gate would have shown, followed by `EVAL#n: k household edit(s) applied pre-compile`.
+- If no `PATCH EVAL#…` route-2 line appears on play but `PATCH CLCS(route2): wrote` does, the hook
+  isn't reading that module in place. Capture the log and check the String walk.
+
+Host test (no device): `node test_evalhook.js ../../patches/src/main/resources/netflix/native/killads.js`.
+
+## Known unknowns
+- The String walk (r0/r1/r2 + one hop) follows the §7 probe; the exact register path at the prologue
+  was not pinned down. If eval is ever called with a `uint8array` the walk finds nothing, and the
+  fallback sweep is all that's left.
+- Whether `clearScriptCache` also deletes the on-disk entries hasn't been confirmed. New caches are no
+  longer produced either way.
+- A third play-time route (for example post-play or autoplay of the next episode through a different
+  saga) would not be covered by these anchors.

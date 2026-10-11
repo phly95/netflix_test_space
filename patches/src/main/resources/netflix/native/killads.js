@@ -346,24 +346,31 @@ var MHU_PATS=[
 ];
 var MHU_PREFIX='return null;';        // 12 bytes; padded with spaces to the decls length
 var mhuDoneSet={}, mhuHits=0;
+// Neuter ONE MHU render hit (addr = start of '<NAME>,render:function(e){'). Returns 1 if written,
+// 0 if already neutered / unexpected layout. Shared by the heap sweep and the eval load-hook.
+function mhuNeuterAt(addr, anchorLen, nm, how){
+  var body=addr.add(anchorLen);                        // first byte after '{'
+  var head=null; try{head=body.readCString(4);}catch(e){}
+  if(head==='retu') return 0;                          // already neutered
+  if(head!=='var ') return 0;                          // unexpected layout — abort this hit
+  var bytes=null; try{bytes=body.readByteArray(400);}catch(e){return 0;}
+  var u8=new Uint8Array(bytes), nlIdx=-1;
+  for(var k=0;k<u8.length;k++){ if(u8[k]===0x0a){ nlIdx=k; break; } }
+  if(nlIdx<MHU_PREFIX.length) return 0;                // no newline in range / decls too short
+  var repl=MHU_PREFIX; while(repl.length<nlIdx) repl+=' ';
+  Memory.protect(body,nlIdx,'rw-'); body.writeByteArray(bytesOf(repl));
+  L('PATCH MHU'+(how||'')+': '+nm+' render->null ('+nlIdx+'B decls) @'+body);
+  return 1;
+}
 function neuterMhuRenders(rs){ if(!MHU_ENABLED)return;
   for(var pi=0;pi<MHU_PATS.length;pi++){ var nm=MHU_PATS[pi]; if(mhuDoneSet[nm])continue;
     var anchor=nm+',render:function(e){', p=pat(anchor);
     for(var i=0;i<rs.length;i++){var r=rs[i];if(r.size>128*1024*1024)continue;
       try{var h=Memory.scanSync(r.base,r.size,p);
         for(var j=0;j<h.length;j++){
-          var body=h[j].address.add(anchor.length);          // first byte after '{'
-          var head=null; try{head=body.readCString(4);}catch(e){}
-          if(head==='retu'){ mhuDoneSet[nm]=true; continue; } // already neutered
-          if(head!=='var '){ continue; }                      // unexpected layout — abort this hit
-          var bytes=null; try{bytes=body.readByteArray(400);}catch(e){continue;}
-          var u8=new Uint8Array(bytes), nlIdx=-1;
-          for(var k=0;k<u8.length;k++){ if(u8[k]===0x0a){ nlIdx=k; break; } }
-          if(nlIdx<MHU_PREFIX.length){ continue; }            // no newline in range / decls too short
-          var repl=MHU_PREFIX; while(repl.length<nlIdx) repl+=' ';
-          Memory.protect(body,nlIdx,'rw-'); body.writeByteArray(bytesOf(repl));
-          mhuDoneSet[nm]=true; mhuHits++;
-          L('PATCH MHU: '+nm+' render->null ('+nlIdx+'B decls) @'+body);
+          var head=null; try{head=h[j].address.add(anchor.length).readCString(4);}catch(e){}
+          if(head==='retu'){ mhuDoneSet[nm]=true; continue; }
+          if(mhuNeuterAt(h[j].address, anchor.length, nm)){ mhuDoneSet[nm]=true; mhuHits++; }
         }
       }catch(e){}
     }
@@ -442,36 +449,47 @@ var FC_ANCHOR='case"clcsInterstitialGate":case"clcsInterstitialPreProfileGate":'
 var FR_ANCHOR='doRouteOnFetchedInterstitial:fetchDgsData"}),!';
 var frDone=false;
 var _fcN=0, _fcT0=Date.now();
+// _lastEvalT: stamped by the eval load-hook (below) whenever Netflix evals a real script. The playback
+// household module is loaded ON PLAY and its gate runs ~1-2s later, so right after any eval this
+// fallback scanner goes tight again (150ms) to catch a copy the hook could not read in place.
+var _lastEvalT=0;
 // Cold-start priority (2026-09-24): on a cold boot every full-memory scanner (fastMASTER, apply, observe)
 // queued ahead of fastCLCS and its 2nd pass slipped to +52s — after the profile gate had already routed.
 // While the household dispatcher is still unpatched (household opt-in only, max 30s), the other scanners
 // step aside so fastCLCS owns the JS thread. Nothing can play before profile select, so the ad-kill loses
 // no coverage; the 30s cap bounds the delay if the dispatcher anchor ever drifts.
 function hhYield(){ return HH_ENABLED && !clcsDone && (Date.now()-_fcT0)<30000; }
-function fastCLCS(){ if(!HH_ENABLED||(clcsDone&&frDone))return; _fcN++;
+// 2026-10 (fork): this used to stop for good once each anchor had been flipped once, and gave up
+// entirely after 1400 passes (~20-30 min). But the playback household module is evaluated ON PLAY,
+// and a re-eval produces a FRESH unpatched copy (V8 compiles it as a new script because its source no
+// longer matches our patched copy) — so the 2nd episode, or any play after the cap, got the prompt
+// ~1-2s into playback. It now keeps re-sweeping for unpatched copies for the whole session
+// (idempotent: already-flipped bytes are skipped), tight after each eval, slow otherwise.
+function fastCLCS(){ if(!HH_ENABLED)return; _fcN++;
   var rs=Process.enumerateRanges('rw-');
-  if(!clcsDone){ var p=pat(FC_ANCHOR), hit=0;
+  { var p=pat(FC_ANCHOR), hit=0, wrote=0;
     for(var i=0;i<rs.length;i++){var r=rs[i];if(r.size>128*1024*1024)continue;
       try{var h=Memory.scanSync(r.base,r.size,p);for(var j=0;j<h.length;j++){ var a=h[j].address;
-        for(var k=0;k<FC_OFFS.length;k++){ var t=a.add(FC_OFFS[k]); if(t.readU8()!==0x63)continue; Memory.protect(t,1,'rw-'); t.writeU8(0x78); }
+        for(var k=0;k<FC_OFFS.length;k++){ var t=a.add(FC_OFFS[k]); if(t.readU8()!==0x63)continue; Memory.protect(t,1,'rw-'); t.writeU8(0x78); wrote++; }
         hit++; }}catch(e){}}
-    if(hit){ clcsDone=true; for(var ai=0;ai<CLCS_ANCHORS.length;ai++) clcsFlipped[CLCS_ANCHORS[ai].lbl]=true;
-      L('PATCH CLCS(fast): both gate case-labels broken x'+hit+' at +'+(Date.now()-_fcT0)+'ms (pass '+_fcN+')'); }
+    if(hit&&!clcsDone){ clcsDone=true; for(var ai=0;ai<CLCS_ANCHORS.length;ai++) clcsFlipped[CLCS_ANCHORS[ai].lbl]=true; }
+    if(wrote) L('PATCH CLCS(fast): gate case-labels broken x'+hit+' at +'+(Date.now()-_fcT0)+'ms (pass '+_fcN+')');
   }
-  if(!frDone){ var p2=pat(FR_ANCHOR), hit2=0;
+  { var p2=pat(FR_ANCHOR), hit2=0, wrote2=0;
     for(var i2=0;i2<rs.length;i2++){var r2=rs[i2];if(r2.size>128*1024*1024)continue;
       try{var h2=Memory.scanSync(r2.base,r2.size,p2);for(var j2=0;j2<h2.length;j2++){ var t2=h2[j2].address.add(FR_ANCHOR.length);
         var vc=t2.readU8(), c1=t2.add(1).readU8(), c2=t2.add(2).readU8();
         if(vc===0x30){ hit2++; continue; }                       // already '0'
         if(!isAlpha(vc)||c1!==0x29||c2!==0x7b) continue;         // expect <var>){
-        Memory.protect(t2,1,'rw-'); t2.writeU8(0x30); hit2++;
+        Memory.protect(t2,1,'rw-'); t2.writeU8(0x30); hit2++; wrote2++;
         L('PATCH CLCS(route2): doRouteOnFetchedInterstitial !'+String.fromCharCode(vc)+'->!0 (playback interstitial -> exit) @'+t2); }}catch(e){}}
-    if(hit2){ frDone=true; L('PATCH CLCS(route2): done x'+hit2+' at +'+(Date.now()-_fcT0)+'ms (pass '+_fcN+')'); }
+    if(hit2) frDone=true;
+    if(wrote2) L('PATCH CLCS(route2): wrote x'+wrote2+' at +'+(Date.now()-_fcT0)+'ms (pass '+_fcN+')');
   }
-  if(clcsDone&&frDone) return;
-  // tight while the dispatcher is pending (~2 min), then a light 1s cadence for route 2 (~10 min)
-  if(!clcsDone&&_fcN<800) setTimeout(fastCLCS,150);
-  else if(_fcN<1400) setTimeout(fastCLCS,1000);
+  // tight while the dispatcher is pending (~2 min) or a script was just eval'd (play-time module),
+  // otherwise a light 2s sweep for the rest of the session.
+  if((!clcsDone&&_fcN<800) || (Date.now()-_lastEvalT)<6000) setTimeout(fastCLCS,150);
+  else setTimeout(fastCLCS,2000);
 }
 // Read-only diagnostic: find each CLCS_MARKERS string in the JS heap and dump ~100 chars of context
 // per hit so the runtime consumer site can be identified from logcat. Runs only while HH_ENABLED and
@@ -507,6 +525,162 @@ function clcsProbe(){ if(!CLCS_PROBE_ENABLED||clcsProbeDone)return; _clcsProbeN+
   }
   if(found>0){ clcsProbeDone=true; L('CLCS-PROBE: '+found+' JS-source hit(s) on pass '+_clcsProbeN+' — design ProfileGate/MHU neuter from the d(e,t) builder'); return; }
   if(_clcsProbeN<240) setTimeout(clcsProbe, 250);   // ~60s, lighter cadence (no fastHH competing)
+}
+
+// ---------- (EVAL) household load-hook — patch each script's SOURCE before V8 compiles it ----------
+// 2026-10 (fork). WHY: every household edit above rewrites JS source bytes sitting in the heap, and
+// that only works if it lands before V8 lazily compiles the function. The playback household gate
+// (route 2) lives in a module Netflix loads ON PLAY: loadScript -> nrdp.gibbon.eval -> the gate runs
+// when the interstitial reply arrives ~1-2s later and compiles from the still-unpatched source. A
+// polling heap sweep (full memory, competing with apply/observe on one Frida thread) loses that race,
+// which is exactly the "prompt pops a second or two into the episode" symptom.
+//
+// HOW: hook the Gibbon2Bridge `eval` callback prologue (0x137626c on 13.0.1/25028 — proven live on
+// .211, see experimental/netflix-household-loadhook/ABI_DECODE_2026-09-15.md §7) and, in onEnter,
+// apply the SAME verified, length-preserving household edits directly to the script String's chars
+// (V8 13.2, 32-bit, no pointer compression: length @+8, Latin1 chars @+12) before the call proceeds.
+// The search is confined to that one string (no whole-memory scanSync inside the callback — that is
+// what stalled appboot before). Every edit is verify-before-write, so an unexpected layout is a no-op.
+// The source String is found by a short bounded walk from r0/r1/r2 (one hop), as the §7 probe did.
+//
+// SCRIPT CACHE: Netflix's bootstrap JS (embedded in libnetflix.so) code-caches every script —
+//   nr.script.addEventListener("script",(e=>{0!==e.version&&e.usedCache||e.cache(1)}))  and, on
+//   uiLoaded, e.cache(100) for each script (bytecode compiled SO FAR, i.e. including functions that
+//   already ran). V8 accepts a cache whose source has the same LENGTH, and all our edits are
+//   length-preserving, so a stale cache built from unpatched source would silently win on warm launches.
+// With HH_NOCACHE we rewrite that listener into a one-shot nr.script.clearScriptCache() and turn the
+// uiLoaded e.cache(100) into a no-op (both length-preserving, in the bootstrap source). Trade-off: no
+// code cache -> slightly slower warm boot. Only active with the household opt-in.
+var EVALHOOK_ENABLED=HH_ENABLED;
+var HH_NOCACHE=true;
+var EVAL_PROLOGUE=0x137626c;                 // Gibbon2Bridge eval callback prologue (13.0.1 build 25028)
+var EVAL_SIG=[[0x0,0xe92d48f0],[0x14,0xe1a07002],[0x18,0xe1a04001]];  // push{r4-r7,fp,lr}; mov r7,r2; mov r4,r1
+var CACHE_A_OLD='nr.script.addEventListener("script",(e=>{0!==e.version&&e.usedCache||e.cache(1)}))';
+var CACHE_A_NEW='(()=>{try{nr.script.clearScriptCache()}catch(e){}})()';
+var CACHE_B_OLD='e&&(e.version<100||!e.usedCache)&&e.cache(100)';
+var CACHE_B_NEW='e&&(e.version<100||!e.usedCache)&&void 0';
+while(CACHE_A_NEW.length<CACHE_A_OLD.length) CACHE_A_NEW+=' ';
+while(CACHE_B_NEW.length<CACHE_B_OLD.length) CACHE_B_NEW+=' ';
+var _evalN=0, _evalPatched=0, evalHooked=false;
+
+function wr1(t,b){ try{ t.writeU8(b); }catch(e){ Memory.protect(t,1,'rw-'); t.writeU8(b); } }
+function wrS(t,str){ var b=bytesOf(str); try{ t.writeByteArray(b); }catch(e){ Memory.protect(t,b.length,'rw-'); t.writeByteArray(b); } }
+function scanIn(base,size,s){ try{ return Memory.scanSync(base,size,pat(s)); }catch(e){ return []; } }
+
+// Bootstrap script-cache producers (see header). Returns sites written.
+function noCachePatchRange(base,size,how){
+  var n=0, j, h;
+  h=scanIn(base,size,CACHE_A_OLD);
+  for(j=0;j<h.length;j++){ wrS(h[j].address,CACHE_A_NEW); n++; L('PATCH EVAL'+how+': script cache listener -> clearScriptCache() @'+h[j].address); }
+  h=scanIn(base,size,CACHE_B_OLD);
+  for(j=0;j<h.length;j++){ wrS(h[j].address,CACHE_B_NEW); n++; L('PATCH EVAL'+how+': uiLoaded e.cache(100) -> no-op @'+h[j].address); }
+  return n;
+}
+// Apply every household edit inside [base, base+size) — one eval'd source string. Each group only
+// runs if its cheap marker is present, so big unrelated bundles cost a handful of scans.
+// Returns the number of sites written.
+function hhPatchRange(base,size,how){
+  var n=0, i, j, h;
+  if(scanIn(base,size,'nterstitial').length){
+  // CLCS dispatcher case labels (profile-select household gate): 'c'->'x' at +5 of each label.
+  for(i=0;i<CLCS_ANCHORS.length;i++){ var CA=CLCS_ANCHORS[i]; h=scanIn(base,size,CA.a);
+    for(j=0;j<h.length;j++){ var tc=h[j].address.add(CA.off); if(tc.readU8()!==0x63)continue; wr1(tc,0x78); n++;
+      clcsFlipped[CA.lbl]=true; L('PATCH EVAL'+how+': '+CA.lbl+' @'+tc); } }
+  if(clcsFlipped[CLCS_ANCHORS[0].lbl]&&clcsFlipped[CLCS_ANCHORS[1].lbl]) clcsDone=true;
+  // Route 2 (playback household gate): doRouteOnFetchedInterstitial `!v){` -> `!0){`.
+  h=scanIn(base,size,FR_ANCHOR);
+  for(j=0;j<h.length;j++){ var t2=h[j].address.add(FR_ANCHOR.length), vc=t2.readU8();
+    if(vc===0x30){ frDone=true; continue; }
+    if(!isAlpha(vc)||t2.add(1).readU8()!==0x29||t2.add(2).readU8()!==0x7b) continue;
+    wr1(t2,0x30); n++; frDone=true;
+    L('PATCH EVAL'+how+': route2 doRouteOnFetchedInterstitial !'+String.fromCharCode(vc)+'->!0 @'+t2); }
+  }
+  // Account-sharing flags + render gates (same anchors as patchHH). The two render anchors carry no
+  // 'AccountSharing' text themselves, but live in the same account-sharing consumer module.
+  if(scanIn(base,size,'AccountSharing').length||scanIn(base,size,'HouseholdAvailable').length){
+  for(i=0;i<HH_ANCHORS.length;i++){ var AN=HH_ANCHORS[i], off=(AN.off!=null?AN.off:AN.a.length-1);
+    var exp=(AN.chr||'0').charCodeAt(0), nb=(AN.to||'1').charCodeAt(0); h=scanIn(base,size,AN.a);
+    for(j=0;j<h.length;j++){ var t3=h[j].address.add(off); if(t3.readU8()!==exp)continue; wr1(t3,nb); n++;
+      hhFlipped[AN.lbl]=true; L('PATCH EVAL'+how+': HH '+AN.lbl+' @'+t3); } }
+  if(hhFlipped['render:netflixHouseholdAvailable(w)']) hhDone=true;
+  }
+  // MHU household screens -> render null (only if the module carries any MHU_ name at all).
+  if(MHU_ENABLED && scanIn(base,size,'MHU_').length){
+    for(i=0;i<MHU_PATS.length;i++){ var anc=MHU_PATS[i]+',render:function(e){'; h=scanIn(base,size,anc);
+      for(j=0;j<h.length;j++){ if(mhuNeuterAt(h[j].address, anc.length, MHU_PATS[i], ' EVAL'+how)){ n++; mhuDoneSet[MHU_PATS[i]]=true; } } } }
+  if(HH_NOCACHE && scanIn(base,size,'.cache(1').length) n+=noCachePatchRange(base,size,how);
+  return n;
+}
+
+// Is p (untagged) a V8 SeqOneByteString holding readable script text? Returns its length or 0.
+function seqStrLen(p){
+  try{
+    var len=p.add(8).readU32(); if(len<1024||len>32*1024*1024) return 0;
+    var u8=new Uint8Array(p.add(12).readByteArray(48));
+    for(var k=0;k<u8.length;k++){ var c=u8[k]; if(!(c===9||c===10||c===13||(c>=32&&c<127))) return 0; }
+    p.add(12+len-1).readU8();               // whole body mapped
+    return len;
+  }catch(e){ return 0; }
+}
+// Bounded walk: r0/r1/r2, the first 16 words behind each, one more hop of 8 words. Collects every
+// distinct tagged pointer that resolves to a readable one-byte script String.
+function findEvalSources(ctx){
+  var out=[], seen={};
+  function tryTagged(v){
+    if(v.isNull()||v.and(1).toInt32()!==1) return;
+    var p=v.and(ptr(1).not()), key=p.toString(); if(seen[key]) return; seen[key]=1;
+    var len=seqStrLen(p); if(len) out.push({p:p,len:len});
+  }
+  var regs=[ctx.r0,ctx.r1,ctx.r2];
+  for(var r=0;r<regs.length;r++){ var base=regs[r]; tryTagged(base);
+    for(var i=0;i<16;i++){ var w; try{ w=base.add(i*4).readPointer(); }catch(e){ break; }
+      tryTagged(w);
+      if(w.and(1).toInt32()===1) continue;  // tagged object: already tried as a String
+      for(var k=0;k<8;k++){ var w2; try{ w2=w.add(k*4).readPointer(); }catch(e){ break; } tryTagged(w2); }
+    }
+  }
+  return out;
+}
+
+function onEvalEnter(ctx){
+  _evalN++;
+  var srcs=findEvalSources(ctx);
+  if(srcs.length) _lastEvalT=Date.now();
+  for(var i=0;i<srcs.length;i++){
+    var t0=Date.now(), n=hhPatchRange(srcs[i].p.add(12), srcs[i].len, '#'+_evalN);
+    if(n){ _evalPatched+=n; L('EVAL#'+_evalN+': '+n+' household edit(s) applied pre-compile (len='+srcs[i].len+', '+(Date.now()-t0)+'ms)'); }
+  }
+}
+
+function netflixModule(){ return Process.findModuleByName('libnetflix.so')||Process.findModuleByName('libandroid_netflix.so'); }
+function armEvalHook(){
+  if(evalHooked||!EVALHOOK_ENABLED) return evalHooked;
+  var m=netflixModule(); if(!m) return false;
+  evalHooked=true;                           // one attempt per process, whatever the outcome
+  var at=m.base.add(EVAL_PROLOGUE);
+  for(var i=0;i<EVAL_SIG.length;i++){ var got=-1; try{ got=at.add(EVAL_SIG[i][0]).readU32()>>>0; }catch(e){}
+    if(got!==EVAL_SIG[i][1]){ L('EVALHOOK: prologue signature mismatch @+0x'+EVAL_SIG[i][0].toString(16)+' (got 0x'+(got>>>0).toString(16)+') — different Netflix build, hook NOT armed; heap-scan fallback only'); return true; } }
+  // Bootstrap JS also sits verbatim in libnetflix.so's data: neuter the cache producers there too,
+  // in case the bootstrap is evaluated from that buffer before/outside the hooked eval.
+  if(HH_NOCACHE){ try{ var rr=m.enumerateRanges('rw-');
+    for(var q=0;q<rr.length;q++) noCachePatchRange(rr[q].base, rr[q].size, '(so)'); }catch(e){ L('EVALHOOK: so-data cache patch error '+e); } }
+  try{
+    Interceptor.attach(at, { onEnter:function(){ try{ onEvalEnter(this.context); }catch(e){ L('EVALHOOK onEnter ERR '+e); } } });
+    L('EVALHOOK armed @'+at+' (household edits applied to each evaluated source before compile; nocache='+HH_NOCACHE+')');
+  }catch(e){ L('EVALHOOK: attach failed '+e+' — heap-scan fallback only'); }
+  return true;
+}
+// libnetflix.so is loaded after the gadget (gadget loads first thing in Application.onCreate), so
+// arm on its dlopen (before JNI_OnLoad / nrdp boot), with a light poll as a backstop.
+function startEvalHook(){
+  if(!EVALHOOK_ENABLED) return;
+  if(armEvalHook()) return;
+  try{ var dl=Module.findGlobalExportByName('android_dlopen_ext');
+    if(dl) Interceptor.attach(dl,{
+      onEnter:function(a){ try{ this.nf=a[0].readCString().indexOf('netflix')>=0; }catch(e){ this.nf=false; } },
+      onLeave:function(){ if(this.nf&&!evalHooked) armEvalHook(); } });
+  }catch(e){ L('EVALHOOK: dlopen hook failed '+e); }
+  var polls=0; (function poll(){ if(armEvalHook()||++polls>3000) return; setTimeout(poll,100); })();
 }
 
 var tries=0;
@@ -566,7 +740,5 @@ if(HH_ENABLED){ L('fastHH armed (household prompt suppression, early race-win sc
 }
 if(CLCS_PROBE_ENABLED){ L('clcsProbe armed (DEV recon: locate runtime CLCS interstitial consumer — Nikflix seam)'); setTimeout(clcsProbe,200); }
 if(HH_ENABLED){ L('fastCLCS armed (gate dispatcher race-win)'); setTimeout(fastCLCS,100); }
+if(EVALHOOK_ENABLED){ L('evalHook arming (household pre-compile source patch)'); startEvalHook(); }
 
-// LATE-ARM: don't attach until +40s. The hot eval callback isn't hooked during the heavy early boot
-// (so no boot stall), but we're armed before the ~+60s route2/menu eval fires on play. We already have
-// the appboot arg path (implicit_args_[0]); this run is to CATCH the late route2/dispatcher source eval.
