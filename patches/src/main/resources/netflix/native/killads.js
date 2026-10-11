@@ -449,9 +449,7 @@ var FC_ANCHOR='case"clcsInterstitialGate":case"clcsInterstitialPreProfileGate":'
 var FR_ANCHOR='doRouteOnFetchedInterstitial:fetchDgsData"}),!';
 var frDone=false;
 var _fcN=0, _fcT0=Date.now();
-// _lastEvalT: stamped by the eval load-hook (below) whenever Netflix evals a real script. The playback
-// household module is loaded ON PLAY and its gate runs ~1-2s later, so right after any eval this
-// fallback scanner goes tight again (150ms) to catch a copy the hook could not read in place.
+// _lastEvalT: stamped by the eval load-hook (below) whenever Netflix evals a real script (diagnostic).
 var _lastEvalT=0;
 // Cold-start priority (2026-09-24): on a cold boot every full-memory scanner (fastMASTER, apply, observe)
 // queued ahead of fastCLCS and its 2nd pass slipped to +52s — after the profile gate had already routed.
@@ -464,7 +462,7 @@ function hhYield(){ return HH_ENABLED && !clcsDone && (Date.now()-_fcT0)<30000; 
 // and a re-eval produces a FRESH unpatched copy (V8 compiles it as a new script because its source no
 // longer matches our patched copy) — so the 2nd episode, or any play after the cap, got the prompt
 // ~1-2s into playback. It now keeps re-sweeping for unpatched copies for the whole session
-// (idempotent: already-flipped bytes are skipped), tight after each eval, slow otherwise.
+// (idempotent: already-flipped bytes are skipped) at a light 2s cadence.
 function fastCLCS(){ if(!HH_ENABLED)return; _fcN++;
   var rs=Process.enumerateRanges('rw-');
   { var p=pat(FC_ANCHOR), hit=0, wrote=0;
@@ -486,9 +484,10 @@ function fastCLCS(){ if(!HH_ENABLED)return; _fcN++;
     if(hit2) frDone=true;
     if(wrote2) L('PATCH CLCS(route2): wrote x'+wrote2+' at +'+(Date.now()-_fcT0)+'ms (pass '+_fcN+')');
   }
-  // tight while the dispatcher is pending (~2 min) or a script was just eval'd (play-time module),
-  // otherwise a light 2s sweep for the rest of the session.
-  if((!clcsDone&&_fcN<800) || (Date.now()-_lastEvalT)<6000) setTimeout(fastCLCS,150);
+  // tight while the dispatcher is pending (~2 min), otherwise a light 2s sweep for the rest of the
+  // session. (Do NOT go tight after evals: the eval hook's onEnter waits on the same Frida JS lock, so
+  // back-to-back full-memory passes during appboot stalled the app at the splash screen.)
+  if(!clcsDone&&_fcN<800) setTimeout(fastCLCS,150);
   else setTimeout(fastCLCS,2000);
 }
 // Read-only diagnostic: find each CLCS_MARKERS string in the JS heap and dump ~100 chars of context
@@ -548,15 +547,23 @@ function clcsProbe(){ if(!CLCS_PROBE_ENABLED||clcsProbeDone)return; _clcsProbeN+
 //   uiLoaded, e.cache(100) for each script (bytecode compiled SO FAR, i.e. including functions that
 //   already ran). V8 accepts a cache whose source has the same LENGTH, and all our edits are
 //   length-preserving, so a stale cache built from unpatched source would silently win on warm launches.
-// With HH_NOCACHE we rewrite that listener into a one-shot nr.script.clearScriptCache() and turn the
-// uiLoaded e.cache(100) into a no-op (both length-preserving, in the bootstrap source). Trade-off: no
-// code cache -> slightly slower warm boot. Only active with the household opt-in.
+// HH_NOCACHE=1 removes that listener and turns the uiLoaded e.cache(100) into a no-op (both
+// length-preserving, in the bootstrap source); =2 additionally calls nr.script.clearScriptCache() once
+// at bootstrap. Default 0 (off): the first device build (=2, scanning inside the eval callback) hung at
+// the splash screen, so these stay opt-in until a device run shows which one is safe.
 var EVALHOOK_ENABLED=HH_ENABLED;
-var HH_NOCACHE=true;
+var HH_NOCACHE=0;            // 0 = leave Netflix's script cache alone (default), 1 = stop producing new
+                             // caches, 2 = also clearScriptCache() at bootstrap (suspected boot stall)
+// EVAL_DEFER: do the anchor scan on Frida's thread right after the eval call, NOT inside Netflix's eval
+// thread. onEnter only does a few hundred pointer reads to find the source String and queues it; the
+// targeted scan of that one string then runs within milliseconds — long before the play-time gate runs
+// (~1-2s later). Scanning inside the callback (8 MB appboot x several patterns, while waiting on the
+// Frida JS lock) stalled boot at the splash screen.
+var EVAL_DEFER=true;
 var EVAL_PROLOGUE=0x137626c;                 // Gibbon2Bridge eval callback prologue (13.0.1 build 25028)
 var EVAL_SIG=[[0x0,0xe92d48f0],[0x14,0xe1a07002],[0x18,0xe1a04001]];  // push{r4-r7,fp,lr}; mov r7,r2; mov r4,r1
 var CACHE_A_OLD='nr.script.addEventListener("script",(e=>{0!==e.version&&e.usedCache||e.cache(1)}))';
-var CACHE_A_NEW='(()=>{try{nr.script.clearScriptCache()}catch(e){}})()';
+var CACHE_A_NEW=(HH_NOCACHE>=2)?'(()=>{try{nr.script.clearScriptCache()}catch(e){}})()':'void 0';
 var CACHE_B_OLD='e&&(e.version<100||!e.usedCache)&&e.cache(100)';
 var CACHE_B_NEW='e&&(e.version<100||!e.usedCache)&&void 0';
 while(CACHE_A_NEW.length<CACHE_A_OLD.length) CACHE_A_NEW+=' ';
@@ -571,7 +578,7 @@ function scanIn(base,size,s){ try{ return Memory.scanSync(base,size,pat(s)); }ca
 function noCachePatchRange(base,size,how){
   var n=0, j, h;
   h=scanIn(base,size,CACHE_A_OLD);
-  for(j=0;j<h.length;j++){ wrS(h[j].address,CACHE_A_NEW); n++; L('PATCH EVAL'+how+': script cache listener -> clearScriptCache() @'+h[j].address); }
+  for(j=0;j<h.length;j++){ wrS(h[j].address,CACHE_A_NEW); n++; L('PATCH EVAL'+how+': script cache listener removed'+(HH_NOCACHE>=2?' (+clearScriptCache)':'')+' @'+h[j].address); }
   h=scanIn(base,size,CACHE_B_OLD);
   for(j=0;j<h.length;j++){ wrS(h[j].address,CACHE_B_NEW); n++; L('PATCH EVAL'+how+': uiLoaded e.cache(100) -> no-op @'+h[j].address); }
   return n;
@@ -608,7 +615,7 @@ function hhPatchRange(base,size,how){
   if(MHU_ENABLED && scanIn(base,size,'MHU_').length){
     for(i=0;i<MHU_PATS.length;i++){ var anc=MHU_PATS[i]+',render:function(e){'; h=scanIn(base,size,anc);
       for(j=0;j<h.length;j++){ if(mhuNeuterAt(h[j].address, anc.length, MHU_PATS[i], ' EVAL'+how)){ n++; mhuDoneSet[MHU_PATS[i]]=true; } } } }
-  if(HH_NOCACHE && scanIn(base,size,'.cache(1').length) n+=noCachePatchRange(base,size,how);
+  if(HH_NOCACHE>0 && scanIn(base,size,'.cache(1').length) n+=noCachePatchRange(base,size,how);
   return n;
 }
 
@@ -642,14 +649,23 @@ function findEvalSources(ctx){
   return out;
 }
 
+var _evalQ=[], _evalDrainArmed=false;
+function patchEvalSrc(src,tag){
+  if(seqStrLen(src.p)!==src.len) return;     // moved/collected since queued: fallback sweep covers it
+  var t0=Date.now(), n=hhPatchRange(src.p.add(12), src.len, tag);
+  if(n){ _evalPatched+=n; L('EVAL'+tag+': '+n+' household edit(s) applied (len='+src.len+', '+(Date.now()-t0)+'ms)'); }
+}
+function drainEvalQ(){ _evalDrainArmed=false;
+  while(_evalQ.length){ var q=_evalQ.shift(); try{ patchEvalSrc(q.src,q.tag); }catch(e){ L('EVAL drain ERR '+e); } } }
 function onEvalEnter(ctx){
   _evalN++;
   var srcs=findEvalSources(ctx);
   if(srcs.length) _lastEvalT=Date.now();
   for(var i=0;i<srcs.length;i++){
-    var t0=Date.now(), n=hhPatchRange(srcs[i].p.add(12), srcs[i].len, '#'+_evalN);
-    if(n){ _evalPatched+=n; L('EVAL#'+_evalN+': '+n+' household edit(s) applied pre-compile (len='+srcs[i].len+', '+(Date.now()-t0)+'ms)'); }
+    if(EVAL_DEFER){ _evalQ.push({src:srcs[i],tag:'#'+_evalN}); }
+    else patchEvalSrc(srcs[i],'#'+_evalN);
   }
+  if(EVAL_DEFER&&_evalQ.length&&!_evalDrainArmed){ _evalDrainArmed=true; setTimeout(drainEvalQ,0); }
 }
 
 function netflixModule(){ return Process.findModuleByName('libnetflix.so')||Process.findModuleByName('libandroid_netflix.so'); }
@@ -662,11 +678,11 @@ function armEvalHook(){
     if(got!==EVAL_SIG[i][1]){ L('EVALHOOK: prologue signature mismatch @+0x'+EVAL_SIG[i][0].toString(16)+' (got 0x'+(got>>>0).toString(16)+') — different Netflix build, hook NOT armed; heap-scan fallback only'); return true; } }
   // Bootstrap JS also sits verbatim in libnetflix.so's data: neuter the cache producers there too,
   // in case the bootstrap is evaluated from that buffer before/outside the hooked eval.
-  if(HH_NOCACHE){ try{ var rr=m.enumerateRanges('rw-');
+  if(HH_NOCACHE>0){ try{ var rr=m.enumerateRanges('rw-');
     for(var q=0;q<rr.length;q++) noCachePatchRange(rr[q].base, rr[q].size, '(so)'); }catch(e){ L('EVALHOOK: so-data cache patch error '+e); } }
   try{
     Interceptor.attach(at, { onEnter:function(){ try{ onEvalEnter(this.context); }catch(e){ L('EVALHOOK onEnter ERR '+e); } } });
-    L('EVALHOOK armed @'+at+' (household edits applied to each evaluated source before compile; nocache='+HH_NOCACHE+')');
+    L('EVALHOOK armed @'+at+' (household edits applied to each evaluated source; defer='+EVAL_DEFER+' nocache='+HH_NOCACHE+')');
   }catch(e){ L('EVALHOOK: attach failed '+e+' — heap-scan fallback only'); }
   return true;
 }

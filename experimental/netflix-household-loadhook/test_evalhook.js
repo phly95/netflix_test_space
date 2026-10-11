@@ -20,7 +20,7 @@ class P{ constructor(o){ this.o=Number(o)>>>0; }
   not(){ return new P((~this.o)>>>0); } isNull(){ return this.o===0; } toInt32(){ return this.o|0; }
   toString(){ return '0x'+this.o.toString(16); } }
 const ptr=x=>new P(typeof x==='string'?parseInt(x):x);
-const logs=[];
+const logs=[], pendingDrain=[];
 const Memory={ protect(){return true;}, allocUtf8String(s){ const a=alloc(s.length+1); MEM.write(s,a,'latin1'); return new P(a); },
   scanSync(base,size,patStr){ const needle=Buffer.from(patStr.split(' ').map(h=>parseInt(h,16)));
     base.chk(size); const out=[]; let i=base.o; const end=base.o+size;
@@ -30,8 +30,8 @@ const sandbox={ console, Memory, ptr, NativePointer:P, Date, JSON, Math, Object,
   Module:{ findGlobalExportByName(){ return new P(0x10); } },
   Process:{ enumerateRanges(){ return []; }, findModuleByName(){ return null; } },
   Interceptor:{ attach(){ throw new Error('no attach in test'); } },
-  setTimeout(){ return 0; } };
-let code=fs.readFileSync(SRC,'latin1').replace('HH_ENABLED=false','HH_ENABLED=true');
+  setTimeout(fn){ if(fn&&fn.name==='drainEvalQ') pendingDrain.push(fn); return 0; } };  // only the eval drain runs (on demand)
+let code=fs.readFileSync(SRC,'latin1').replace('HH_ENABLED=false','HH_ENABLED=true').replace(/var HH_NOCACHE=\d;/,'var HH_NOCACHE=2;');  // exercise the full cache path
 vm.createContext(sandbox); vm.runInContext(code+'\n;this.__t={hhPatchRange,noCachePatchRange,findEvalSources,seqStrLen,onEvalEnter,CACHE_A_NEW,CACHE_A_OLD,CACHE_B_NEW,CACHE_B_OLD,st:function(){return {clcsDone,frDone,hhDone};}};',sandbox);
 const T=sandbox.__t; let fail=0;
 function ok(c,m){ console.log((c?'PASS ':'FAIL ')+m); if(!c)fail++; }
@@ -53,6 +53,8 @@ const found=T.findEvalSources({r0:new P(alloc(64)), r1:new P(info), r2:new P(all
 ok(found.length===1 && found[0].p.o===sA && found[0].len===hhMod.length, 'findEvalSources locates the eval String via r1 -> values_ -> tagged String');
 const before=hhMod.length;
 T.onEvalEnter({r0:new P(alloc(64)), r1:new P(info), r2:new P(alloc(64))});
+ok(strAt(sA)===hhMod && pendingDrain.length===1, 'onEnter only queues (no scanning on the eval thread); drain scheduled');
+pendingDrain.shift()();                                  // Frida thread runs the deferred targeted scan
 const after=strAt(sA);
 ok(after.length===before, 'source length preserved');
 ok(after.includes('doRouteOnFetchedInterstitial:fetchDgsData"}),!0){p.next=24;break}'), 'route2 guard !v -> !0');
