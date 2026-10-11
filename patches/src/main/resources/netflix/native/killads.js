@@ -37,20 +37,20 @@ var ADK_HH_PERIOD=120000;
 //  - household jobs have priority over the low-priority diagnostics (two queues);
 //  - ranges under AS_MIN_RANGE are skipped (thousands of tiny thread-stack/arena mappings; the device
 //    has ~550 rw- ranges, JS source lives in the big heap ranges).
-var AS_MAX=2, AS_MIN_RANGE=32768, _asRun=0, _asQH=[], _asQL=[];
-function hhBusy(){ return _asRun+_asQH.length+_asQL.length>0; }
+var AS_MAX=2, AS_MIN_RANGE=32768, _asRun=0, _asQ=[[],[],[]];   // priority 0 = eval-hook sources, 1 = sweeps, 2 = diagnostics
+function hhBusy(){ return _asRun+_asQ[0].length+_asQ[1].length+_asQ[2].length>0; }
 function adkDefer(){ return HH_ENABLED && ((Date.now()-_fcT0)<60000 || hhBusy()); }
-function aScanPump(){ while(_asRun<AS_MAX&&(_asQH.length||_asQL.length)){ var job=_asQH.length?_asQH.shift():_asQL.shift(); _asRun++; job(); } }
-function aScanRange(r,patStr,onMatch,done,low){
-  (low?_asQL:_asQH).push(function(){ var fin=false;
+function aScanPump(){ while(_asRun<AS_MAX){ var q=_asQ[0].length?_asQ[0]:(_asQ[1].length?_asQ[1]:(_asQ[2].length?_asQ[2]:null)); if(!q) return; var job=q.shift(); _asRun++; job(); } }
+function aScanRange(r,patStr,onMatch,done,prio){
+  _asQ[prio===true?2:(prio==null||prio===false?1:prio)].push(function(){ var fin=false;
     function end(){ if(fin) return; fin=true; _asRun--; try{ done(); }catch(e){ L('aScan done ERR '+e); } aScanPump(); }
     try{ Memory.scan(r.base,r.size,patStr,{ onMatch:function(a,sz){ try{ onMatch(a,sz); }catch(e){ L('aScan match ERR '+e); } }, onError:function(){ end(); }, onComplete:end }); }
     catch(e){ end(); } });
   aScanPump(); }
-function aScanAll(rs,patStr,onMatch,done,low){ var list=[];
+function aScanAll(rs,patStr,onMatch,done,prio){ var list=[];
   for(var i=0;i<rs.length;i++) if(rs[i].size>=AS_MIN_RANGE&&rs[i].size<=128*1024*1024) list.push(rs[i]);
   var left=list.length; if(!left){ done(); return; }
-  for(var k=0;k<list.length;k++) aScanRange(list[k],patStr,onMatch,function(){ if(--left===0) done(); },low); }
+  for(var k=0;k<list.length;k++) aScanRange(list[k],patStr,onMatch,function(){ if(--left===0) done(); },prio); }
 function runSteps(steps,done,gated){ var i=0;
   (function next(){ if(i>=steps.length){ if(done) done(); return; }
     if(gated&&adkDefer()){ setTimeout(next,300); return; }   // ad-kill steps only run while no household scan is pending
@@ -349,6 +349,12 @@ var hhFlipped={},hhDone=false;
 // module, and finding one forces a full recheck of all four next cycle (the other module copies arrive
 // together); never-seen anchors are retried every 5th cycle.
 var HH_W_LBL='render:netflixHouseholdAvailable(w)', _hhCyc=0, _hhLogged=false, _hhForceAll=false;
+function hhAnchorAt(a,AN){ var off=(AN.off!=null?AN.off:AN.a.length-1), exp=(AN.chr||'0'), nb=(AN.to||'1').charCodeAt(0);
+  var t=a.add(off), cur=null; try{ cur=t.readCString(1); }catch(e){}
+  if(cur!==exp) return 0; Memory.protect(t,1,'rw-'); t.writeByteArray([nb]);
+  if(hhDone&&AN.lbl===HH_W_LBL) _hhForceAll=true;      // a fresh copy of the module appeared
+  hhFlipped[AN.lbl]=true;
+  L('PATCH HH: '+AN.lbl+' '+exp+'->'+(AN.to||'1')+' @'+t); return 1; }
 function patchHHAsync(rs,done){ _hhCyc++;
   var jobs=[], all=_hhForceAll; _hhForceAll=false;
   for(var ai=0;ai<HH_ANCHORS.length;ai++){ var AN=HH_ANCHORS[ai];
@@ -358,12 +364,7 @@ function patchHHAsync(rs,done){ _hhCyc++;
     else if(!hhFlipped[AN.lbl]&&_hhCyc%5===0) jobs.push(AN); }
   if(!jobs.length){ done(); return; }
   var left=jobs.length;
-  function one(AN){ var off=(AN.off!=null?AN.off:AN.a.length-1), exp=(AN.chr||'0'), nb=(AN.to||'1').charCodeAt(0);
-    aScanAll(rs,pat(AN.a),function(a){ var t=a.add(off), cur=null; try{ cur=t.readCString(1); }catch(e){}
-        if(cur!==exp) return; Memory.protect(t,1,'rw-'); t.writeByteArray([nb]);
-        if(hhDone&&AN.lbl===HH_W_LBL) _hhForceAll=true;      // a fresh copy of the module appeared
-        hhFlipped[AN.lbl]=true;
-        L('PATCH HH: '+AN.lbl+' '+exp+'->'+(AN.to||'1')+' @'+t); },
+  function one(AN){ aScanAll(rs,pat(AN.a),function(a){ hhAnchorAt(a,AN); },
       function(){ if(--left===0){ if(hhFlipped[HH_W_LBL]) hhDone=true; done(); } }); }
   for(var ji=0;ji<jobs.length;ji++) one(jobs[ji]); }
 // fastHH: persistent async household loop. No yielding to the ad-kill any more (it cannot land on this
@@ -420,16 +421,17 @@ function mhuNeuterAt(addr, anchorLen, nm, how){
 // the device); each hit is matched against the known '<NAME>,render:function(e){' anchors and neutered
 // in place. Replaces 16 separate full-heap scans per pass (~40s of scanSync). Persistent: a re-evaluated
 // module is neutered again (mhuNeuterAt skips already-neutered renders).
+function mhuSeedAt(a,how){ var s=null; try{ s=a.readCString(90); }catch(e){ return 0; }
+  for(var i=0;i<MHU_PATS.length;i++){ var nm=MHU_PATS[i], anc=nm+',render:function(e){';
+    if(s.indexOf(anc)!==0) continue;
+    var head=null; try{ head=a.add(anc.length).readCString(4); }catch(e){}
+    if(head==='retu'){ mhuDoneSet[nm]=true; return 0; }
+    if(mhuNeuterAt(a,anc.length,nm,how)){ mhuDoneSet[nm]=true; mhuHits++; return 1; }
+    return 0; }
+  return 0; }
 function neuterMhuAsync(rs,done){ if(!MHU_ENABLED){ done(); return; }
   var seen=0;
-  aScanAll(rs,pat('MHU_'),function(a){ if(++seen>1500) return;
-    var s=null; try{ s=a.readCString(90); }catch(e){ return; }
-    for(var i=0;i<MHU_PATS.length;i++){ var nm=MHU_PATS[i], anc=nm+',render:function(e){';
-      if(s.indexOf(anc)!==0) continue;
-      var head=null; try{ head=a.add(anc.length).readCString(4); }catch(e){}
-      if(head==='retu'){ mhuDoneSet[nm]=true; return; }
-      if(mhuNeuterAt(a,anc.length,nm)){ mhuDoneSet[nm]=true; mhuHits++; }
-      return; } }, done); }
+  aScanAll(rs,pat('MHU_'),function(a){ if(++seen>1500) return; mhuSeedAt(a); }, done); }
 
 // ---------- (CLCS) EXPERIMENTAL runtime interstitial-enforcement neuter — Nikflix seam ----------
 // Nikflix (web) shows household enforcement is a PER-/watch RUNTIME GraphQL call, not a boot flag:
@@ -512,28 +514,32 @@ function hhYield(){ return HH_ENABLED && !clcsDone && (Date.now()-_fcT0)<30000; 
 // labels, route-2 guard) over every range, results applied from the match callback. Persistent: it keeps
 // rescanning for unpatched copies for the whole session (a re-evaluated module is a fresh copy).
 var _frSeen=false, _frBad=false;
+// Match handlers shared by the heap loop (fastCLCS) and the eval hook (hhPatchSource).
+function clcsPairAt(a){ var w=0;
+  for(var k=0;k<FC_OFFS.length;k++){ var t=a.add(FC_OFFS[k]); if(t.readU8()!==0x63) continue; Memory.protect(t,1,'rw-'); t.writeU8(0x78); w++; }
+  return w; }
+function clcsMarkDone(){ clcsDone=true; for(var ai=0;ai<CLCS_ANCHORS.length;ai++) clcsFlipped[CLCS_ANCHORS[ai].lbl]=true; }
+function route2At(a){ var t2=a.add(FR_ANCHOR.length);       // 1 = wrote, 0 = already patched, -1 = guard shape unexpected
+  var vc=t2.readU8(), c1=t2.add(1).readU8(), c2=t2.add(2).readU8();
+  if(!_frSeen){ _frSeen=true; L('DIAG route2 anchor RESIDENT @'+t2+' next='+JSON.stringify(t2.readCString(24))+' at +'+(Date.now()-_fcT0)+'ms'); }
+  if(vc===0x30) return 0;                                      // already '0'
+  if(!isAlpha(vc)||c1!==0x29||c2!==0x7b){ if(!_frBad){ _frBad=true; L('DIAG route2 anchor found but guard shape UNEXPECTED: '+JSON.stringify(t2.sub(120).readCString(200))); } return -1; }   // expect <var>){
+  Memory.protect(t2,1,'rw-'); t2.writeU8(0x30);
+  L('PATCH CLCS(route2): doRouteOnFetchedInterstitial !'+String.fromCharCode(vc)+'->!0 (playback interstitial -> exit) @'+t2); return 1; }
 function fastCLCS(){ if(!HH_ENABLED)return; _fcN++;
   var rs=null; try{ rs=Process.enumerateRanges('rw-'); }catch(e){}
   if(!rs){ setTimeout(fastCLCS,2000); return; }
   var hit=0, wrote=0, hit2=0, wrote2=0, left=2;
   function fin(){ if(--left>0) return;
-    if(hit&&!clcsDone){ clcsDone=true; for(var ai=0;ai<CLCS_ANCHORS.length;ai++) clcsFlipped[CLCS_ANCHORS[ai].lbl]=true; }
+    if(hit&&!clcsDone) clcsMarkDone();
     if(wrote) L('PATCH CLCS(fast): gate case-labels broken x'+hit+' at +'+(Date.now()-_fcT0)+'ms (pass '+_fcN+')');
     if(hit2) frDone=true;
     if(wrote2) L('PATCH CLCS(route2): wrote x'+wrote2+' at +'+(Date.now()-_fcT0)+'ms (pass '+_fcN+')');
     // tight while the dispatcher is pending (~2 min), otherwise a light 2s sweep for the session.
     if(!clcsDone&&_fcN<800) setTimeout(fastCLCS,150);
     else setTimeout(fastCLCS,2000); }
-  aScanAll(rs,pat(FC_ANCHOR),function(a){
-    for(var k=0;k<FC_OFFS.length;k++){ var t=a.add(FC_OFFS[k]); if(t.readU8()!==0x63) continue; Memory.protect(t,1,'rw-'); t.writeU8(0x78); wrote++; }
-    hit++; }, fin);
-  aScanAll(rs,pat(FR_ANCHOR),function(a){ var t2=a.add(FR_ANCHOR.length);
-    var vc=t2.readU8(), c1=t2.add(1).readU8(), c2=t2.add(2).readU8();
-    if(!_frSeen){ _frSeen=true; L('DIAG route2 anchor RESIDENT @'+t2+' next='+JSON.stringify(t2.readCString(24))+' at +'+(Date.now()-_fcT0)+'ms'); }
-    if(vc===0x30){ hit2++; return; }                       // already '0'
-    if(!isAlpha(vc)||c1!==0x29||c2!==0x7b){ if(!_frBad){ _frBad=true; L('DIAG route2 anchor found but guard shape UNEXPECTED: '+JSON.stringify(t2.sub(120).readCString(200))); } return; }   // expect <var>){
-    Memory.protect(t2,1,'rw-'); t2.writeU8(0x30); hit2++; wrote2++;
-    L('PATCH CLCS(route2): doRouteOnFetchedInterstitial !'+String.fromCharCode(vc)+'->!0 (playback interstitial -> exit) @'+t2); }, fin);
+  aScanAll(rs,pat(FC_ANCHOR),function(a){ hit++; wrote+=clcsPairAt(a); }, fin);
+  aScanAll(rs,pat(FR_ANCHOR),function(a){ var r=route2At(a); if(r>=0) hit2++; if(r===1) wrote2++; }, fin);
 }
 // ---------- (HHDIAG) household diagnostics — read-only, sliced (2026-10) ----------
 // 1) HHSTATUS every 5s (~5 min): which household layers have landed. Cheap; the old ANCHOR MAP never
@@ -547,7 +553,7 @@ var HHD_MARKERS=['pushClcsInterstitialGate','doRouteOnFetchedInterstitial','lcsI
 var HHD_BEFORE=360, HHD_AFTER=840, HHD_MAX=5;
 var hhdSeen={}, hhdCount={}, _hhdN=0, _hhdDone=false;
 function hhStatus(){ if(!HH_DIAG) return;
-  L('HHSTATUS +'+Math.round((Date.now()-_fcT0)/1000)+'s clcs='+clcsDone+' route2='+frDone+' hh='+hhDone+' mhu='+mhuHits+'/'+MHU_PATS.length+' ads[adv='+advDone+' master='+masterDone+' b='+bDone+' dai='+daiDone+'] fcPass='+_fcN+' hhPass='+_fastHHn+' scans='+_asRun+'+'+_asQH.length+'/'+_asQL.length+' eval='+_evalN);
+  L('HHSTATUS +'+Math.round((Date.now()-_fcT0)/1000)+'s clcs='+clcsDone+' route2='+frDone+' hh='+hhDone+' mhu='+mhuHits+'/'+MHU_PATS.length+' ads[adv='+advDone+' master='+masterDone+' b='+bDone+' dai='+daiDone+'] fcPass='+_fcN+' hhPass='+_fastHHn+' scans='+_asRun+'+'+_asQ[1].length+'/'+_asQ[2].length+' eval='+_evalN);
   if(Date.now()-_fcT0<300000) setTimeout(hhStatus,5000); }
 function looksLikeJs(c){ var n=0; for(var i=0;i<c.length&&n<8;i++){ var ch=c.charCodeAt(i); if(ch===59||ch===123||ch===125||ch===40) n++; } return n>=8; }
 function hhDiag(){ if(!HH_DIAG||_hhdDone) return; _hhdN++;
@@ -590,38 +596,40 @@ var ADK_M2_RE=/else\{if\(!([A-Za-z_$][\w$]*)\.adverts\|\|!\1\.adverts\.adBreaks\
 var ADK_M2_DONE_RE=/else\{if\(!([A-Za-z_$][\w$]*)\.adverts\|\|!\1\.adverts\.adBreaks\.length\)return;([A-Za-z_$][\w$]*)=\[\] +\.map\(function\(/;
 var _adkN=0, _adkLogged={};
 function adkPad(txt,len){ while(txt.length<len) txt+=' '; return txt; }
-function adkAdv(rs,done){
-  aScanAll(rs,pat(ADK_ADV_ANCH),function(a){
-    var pre=null,fwd=null; try{ pre=a.sub(40).readCString(40); fwd=a.add(ADK_ADV_ANCH.length).readCString(220); }catch(e){ return; }
-    var m=/null==\(([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)$/.exec(pre); if(!m) return;
-    if(fwd.indexOf(m[1]+'.map(function(')!==0||fwd.indexOf('locationMs')<0) return;   // the ad-break normaliser only
-    var len=m[2].length+ADK_ADV_SRC.length, t=a.sub(m[2].length);
-    Memory.protect(t,len,'rw-'); t.writeByteArray(bytesOf(adkPad('[]',len))); advDone=true;
-    L('PATCH ADK ADV: adverts.adBreaks source '+m[2]+ADK_ADV_SRC+'->[] (empty all ad breaks) @'+t+' now='+JSON.stringify(t.sub(8).readCString(len+40)));
-  },done); }
-function adkMaster(rs,done){
-  aScanAll(rs,ADK_M1_PAT,function(a){
-    var ctx=null; try{ ctx=a.readCString(1100); }catch(e){ return; }
-    var m1=/^getAds\(([A-Za-z_$][\w$]*)\);if\(([A-Za-z_$])\)\{var /.exec(ctx); if(!m1) return;
-    var m2=ADK_M2_RE.exec(ctx), m2b=m2?null:ADK_M2_DONE_RE.exec(ctx);
-    if(!m2&&!m2b){ if(!_adkLogged.m2){ _adkLogged.m2=true; L('ADK master: getAdMetadata else-branch shape UNEXPECTED, no write: '+JSON.stringify(ctx.slice(0,700))); } return; }
-    if(m2){ var xl=m2[1].length, tail=xl+'.adverts.adBreaks.map(function('.length, idx=m2.index+m2[0].length-tail, tlen=xl+'.adverts.adBreaks'.length;
-      if(ctx.substr(idx,tlen)!==m2[1]+'.adverts.adBreaks') return;
-      var t2=a.add(idx); Memory.protect(t2,tlen,'rw-'); t2.writeByteArray(bytesOf(adkPad('[]',tlen)));
-      L('PATCH ADK MASTER: else-branch '+m2[1]+'.adverts.adBreaks.map -> [].map @'+t2); }
-    var t1=a.add(13); Memory.protect(t1,1,'rw-'); t1.writeByteArray([0x30]);
-    var vb=-1; try{ vb=t1.readU8(); }catch(e){}
-    masterDone=true; m1Done=true; m2Done=true;
-    L('PATCH ADK MASTER: getAdMetadata if('+m1[2]+')->if(0) @'+t1+' verify='+(vb===0x30?'OK':'FAIL('+vb+')'));
-  },done); }
-function adkB(rs,done){
-  aScanAll(rs,pat(B_ANCHOR),function(a){ var t=a.add(7), cur=null; try{ cur=t.readCString(B_OLD.length); }catch(e){}
-    if(cur!==B_OLD) return; Memory.protect(t,B_NEW.length,'rw-'); t.writeByteArray(bytesOf(B_NEW)); bDone=true;
-    L('PATCH ADK B: pause z() displayAd->void0 @'+t); },done); }
-function adkDai(rs,done){
-  aScanAll(rs,pat(DAI_ANCHOR),function(a){ var t=a.add(DAI_OFF), cur=null; try{ cur=t.readCString(1); }catch(e){}
-    if(cur!==DAI_EXP) return; Memory.protect(t,1,'rw-'); t.writeByteArray([0x3d]); daiDone=true;
-    L('PATCH ADK DAI: applyDaiPrefetch 0!==->0=== @'+t); },done); }
+// Per-match handlers (return 1 if they wrote). Shared by the async heap loop below and by the eval hook
+// (hhPatchSource), which feeds them matches found inside one just-evaluated script string.
+function adkAdvAt(a){
+  var pre=null,fwd=null; try{ pre=a.sub(40).readCString(40); fwd=a.add(ADK_ADV_ANCH.length).readCString(220); }catch(e){ return 0; }
+  var m=/null==\(([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)$/.exec(pre); if(!m) return 0;
+  if(fwd.indexOf(m[1]+'.map(function(')!==0||fwd.indexOf('locationMs')<0) return 0;   // the ad-break normaliser only
+  var len=m[2].length+ADK_ADV_SRC.length, t=a.sub(m[2].length);
+  Memory.protect(t,len,'rw-'); t.writeByteArray(bytesOf(adkPad('[]',len))); advDone=true;
+  L('PATCH ADK ADV: adverts.adBreaks source '+m[2]+ADK_ADV_SRC+'->[] (empty all ad breaks) @'+t+' now='+JSON.stringify(t.sub(8).readCString(len+40)));
+  return 1; }
+function adkMasterAt(a){
+  var ctx=null; try{ ctx=a.readCString(1100); }catch(e){ return 0; }
+  var m1=/^getAds\(([A-Za-z_$][\w$]*)\);if\(([A-Za-z_$])\)\{var /.exec(ctx); if(!m1) return 0;
+  var m2=ADK_M2_RE.exec(ctx), m2b=m2?null:ADK_M2_DONE_RE.exec(ctx);
+  if(!m2&&!m2b){ if(!_adkLogged.m2){ _adkLogged.m2=true; L('ADK master: getAdMetadata else-branch shape UNEXPECTED, no write: '+JSON.stringify(ctx.slice(0,700))); } return 0; }
+  if(m2){ var xl=m2[1].length, tail=xl+'.adverts.adBreaks.map(function('.length, idx=m2.index+m2[0].length-tail, tlen=xl+'.adverts.adBreaks'.length;
+    if(ctx.substr(idx,tlen)!==m2[1]+'.adverts.adBreaks') return 0;
+    var t2=a.add(idx); Memory.protect(t2,tlen,'rw-'); t2.writeByteArray(bytesOf(adkPad('[]',tlen)));
+    L('PATCH ADK MASTER: else-branch '+m2[1]+'.adverts.adBreaks.map -> [].map @'+t2); }
+  var t1=a.add(13); Memory.protect(t1,1,'rw-'); t1.writeByteArray([0x30]);
+  var vb=-1; try{ vb=t1.readU8(); }catch(e){}
+  masterDone=true; m1Done=true; m2Done=true;
+  L('PATCH ADK MASTER: getAdMetadata if('+m1[2]+')->if(0) @'+t1+' verify='+(vb===0x30?'OK':'FAIL('+vb+')'));
+  return 1; }
+function adkBAt(a){ var t=a.add(7), cur=null; try{ cur=t.readCString(B_OLD.length); }catch(e){}
+  if(cur!==B_OLD) return 0; Memory.protect(t,B_NEW.length,'rw-'); t.writeByteArray(bytesOf(B_NEW)); bDone=true;
+  L('PATCH ADK B: pause z() displayAd->void0 @'+t); return 1; }
+function adkDaiAt(a){ var t=a.add(DAI_OFF), cur=null; try{ cur=t.readCString(1); }catch(e){}
+  if(cur!==DAI_EXP) return 0; Memory.protect(t,1,'rw-'); t.writeByteArray([0x3d]); daiDone=true;
+  L('PATCH ADK DAI: applyDaiPrefetch 0!==->0=== @'+t); return 1; }
+function adkAdv(rs,done){ aScanAll(rs,pat(ADK_ADV_ANCH),adkAdvAt,done); }
+function adkMaster(rs,done){ aScanAll(rs,ADK_M1_PAT,adkMasterAt,done); }
+function adkB(rs,done){ aScanAll(rs,pat(B_ANCHOR),adkBAt,done); }
+function adkDai(rs,done){ aScanAll(rs,pat(DAI_ANCHOR),adkDaiAt,done); }
 // Persistent loop. Until the kills have landed once: every anchor each cycle, quickly. Afterwards a cheap
 // detector for fresh (re-evaluated, unpatched) copies: the two main anchors every 5s, B/DAI every 4th cycle.
 function fastADK(){ if(!HH_ENABLED) return; _adkN++;
@@ -727,6 +735,7 @@ var _evalN=0, _evalPatched=0, evalHooked=false;
 function wr1(t,b){ try{ t.writeU8(b); }catch(e){ Memory.protect(t,1,'rw-'); t.writeU8(b); } }
 function wrS(t,str){ var b=bytesOf(str); try{ t.writeByteArray(b); }catch(e){ Memory.protect(t,b.length,'rw-'); t.writeByteArray(b); } }
 function scanIn(base,size,s){ try{ return Memory.scanSync(base,size,pat(s)); }catch(e){ return []; } }
+function scanRaw(base,size,hexPat){ try{ return Memory.scanSync(base,size,hexPat); }catch(e){ return []; } }
 
 // Bootstrap script-cache producers (see header). Returns sites written.
 function noCachePatchRange(base,size,how){
@@ -737,41 +746,25 @@ function noCachePatchRange(base,size,how){
   for(j=0;j<h.length;j++){ wrS(h[j].address,CACHE_B_NEW); n++; L('PATCH EVAL'+how+': uiLoaded e.cache(100) -> no-op @'+h[j].address); }
   return n;
 }
-// Apply every household edit inside [base, base+size) — one eval'd source string. Each group only
-// runs if its cheap marker is present, so big unrelated bundles cost a handful of scans.
-// Returns the number of sites written.
-function hhPatchRange(base,size,how){
-  var n=0, i, j, h;
-  if(scanIn(base,size,'nterstitial').length){
-  // CLCS dispatcher case labels (profile-select household gate): 'c'->'x' at +5 of each label.
-  for(i=0;i<CLCS_ANCHORS.length;i++){ var CA=CLCS_ANCHORS[i]; h=scanIn(base,size,CA.a);
-    for(j=0;j<h.length;j++){ var tc=h[j].address.add(CA.off); if(tc.readU8()!==0x63)continue; wr1(tc,0x78); n++;
-      clcsFlipped[CA.lbl]=true; L('PATCH EVAL'+how+': '+CA.lbl+' @'+tc); } }
-  if(clcsFlipped[CLCS_ANCHORS[0].lbl]&&clcsFlipped[CLCS_ANCHORS[1].lbl]) clcsDone=true;
-  // Route 2 (playback household gate): doRouteOnFetchedInterstitial `!v){` -> `!0){`.
-  h=scanIn(base,size,FR_ANCHOR);
-  for(j=0;j<h.length;j++){ var t2=h[j].address.add(FR_ANCHOR.length), vc=t2.readU8();
-    if(vc===0x30){ frDone=true; continue; }
-    if(!isAlpha(vc)||t2.add(1).readU8()!==0x29||t2.add(2).readU8()!==0x7b) continue;
-    wr1(t2,0x30); n++; frDone=true;
-    L('PATCH EVAL'+how+': route2 doRouteOnFetchedInterstitial !'+String.fromCharCode(vc)+'->!0 @'+t2); }
-  }
-  // Account-sharing flags + render gates (same anchors as patchHH). The two render anchors carry no
-  // 'AccountSharing' text themselves, but live in the same account-sharing consumer module.
-  if(scanIn(base,size,'AccountSharing').length||scanIn(base,size,'HouseholdAvailable').length){
-  for(i=0;i<HH_ANCHORS.length;i++){ var AN=HH_ANCHORS[i], off=(AN.off!=null?AN.off:AN.a.length-1);
-    var exp=(AN.chr||'0').charCodeAt(0), nb=(AN.to||'1').charCodeAt(0); h=scanIn(base,size,AN.a);
-    for(j=0;j<h.length;j++){ var t3=h[j].address.add(off); if(t3.readU8()!==exp)continue; wr1(t3,nb); n++;
-      hhFlipped[AN.lbl]=true; L('PATCH EVAL'+how+': HH '+AN.lbl+' @'+t3); } }
-  if(hhFlipped['render:netflixHouseholdAvailable(w)']) hhDone=true;
-  }
-  // MHU household screens -> render null (only if the module carries any MHU_ name at all).
-  if(MHU_ENABLED && scanIn(base,size,'MHU_').length){
-    for(i=0;i<MHU_PATS.length;i++){ var anc=MHU_PATS[i]+',render:function(e){'; h=scanIn(base,size,anc);
-      for(j=0;j<h.length;j++){ if(mhuNeuterAt(h[j].address, anc.length, MHU_PATS[i], ' EVAL'+how)){ n++; mhuDoneSet[MHU_PATS[i]]=true; } } } }
-  if(HH_NOCACHE>0 && scanIn(base,size,'.cache(1').length) n+=noCachePatchRange(base,size,how);
-  return n;
-}
+// Patch ONE just-evaluated source string [base, base+size) with every household + ad edit, using the same
+// match handlers as the heap loops. Async (worker-thread scans, top priority) so Netflix's eval thread and
+// Frida's JS thread are never blocked by a multi-MB source; done(n) gets the number of edits written.
+function hhHookJobs(){
+  var jobs=[], i;
+  jobs.push([pat(FC_ANCHOR), function(a){ var w=clcsPairAt(a); clcsMarkDone(); return w; }]);
+  jobs.push([pat(FR_ANCHOR), function(a){ var r=route2At(a); if(r>=0) frDone=true; return r===1?1:0; }]);
+  for(i=0;i<HH_ANCHORS.length;i++) (function(AN){ jobs.push([pat(AN.a), function(a){ var w=hhAnchorAt(a,AN); if(hhFlipped[HH_W_LBL]) hhDone=true; return w; }]); })(HH_ANCHORS[i]);
+  if(MHU_ENABLED) jobs.push([pat('MHU_'), function(a){ return mhuSeedAt(a,' EVAL'); }]);
+  jobs.push([pat(ADK_ADV_ANCH), adkAdvAt]); jobs.push([ADK_M1_PAT, adkMasterAt]);
+  jobs.push([pat(B_ANCHOR), adkBAt]); jobs.push([pat(DAI_ANCHOR), adkDaiAt]);
+  if(HH_NOCACHE>0){ jobs.push([pat(CACHE_A_OLD), function(a){ wrS(a,CACHE_A_NEW); return 1; }]); jobs.push([pat(CACHE_B_OLD), function(a){ wrS(a,CACHE_B_NEW); return 1; }]); }
+  return jobs; }
+function hhPatchSource(base,size,tag,done){
+  var jobs=hhJobs0||(hhJobs0=hhHookJobs()), left=jobs.length, n=0;
+  for(var i=0;i<jobs.length;i++) (function(j){
+    aScanRange({base:base,size:size},j[0],function(a){ try{ n+=j[1](a); }catch(e){ L('hook handler ERR '+e); } },
+      function(){ if(--left===0&&done) done(n); }, 0); })(jobs[i]); }
+var hhJobs0=null;
 
 // Is p (untagged) a V8 SeqOneByteString holding readable script text? Returns its length or 0.
 function seqStrLen(p){
@@ -806,8 +799,8 @@ function findEvalSources(ctx){
 var _evalQ=[], _evalDrainArmed=false;
 function patchEvalSrc(src,tag){
   if(seqStrLen(src.p)!==src.len) return;     // moved/collected since queued: fallback sweep covers it
-  var t0=Date.now(), n=hhPatchRange(src.p.add(12), src.len, tag);
-  if(n){ _evalPatched+=n; L('EVAL'+tag+': '+n+' household edit(s) applied (len='+src.len+', '+(Date.now()-t0)+'ms)'); }
+  var t0=Date.now();
+  hhPatchSource(src.p.add(12), src.len, tag, function(n){ if(n){ _evalPatched+=n; L('EVAL'+tag+': '+n+' edit(s) applied (len='+src.len+', '+(Date.now()-t0)+'ms)'); } });
 }
 function drainEvalQ(){ _evalDrainArmed=false;
   while(_evalQ.length){ var q=_evalQ.shift(); try{ patchEvalSrc(q.src,q.tag); }catch(e){ L('EVAL drain ERR '+e); } } }

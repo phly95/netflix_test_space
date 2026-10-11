@@ -42,8 +42,9 @@ const sandbox={ console, Memory, ptr, NativePointer:P, Date, JSON, Math, Object,
   Interceptor:{ attach(){ throw new Error('no attach in test'); } },
   setTimeout(fn,ms){ if(fn&&fn.name==='drainEvalQ') pendingDrain.push(fn); else timers.push({fn,ms}); return 0; } };  // timers run on demand
 let code=fs.readFileSync(SRC,'latin1').replace('HH_ENABLED=false','HH_ENABLED=true').replace(/var HH_NOCACHE=\d;/,'var HH_NOCACHE=2;');  // exercise the full cache path
-vm.createContext(sandbox); vm.runInContext(code+'\n;this.__t={aScanAll,runSteps,fastCLCS,fastHH,fastADK,hhPatchRange,noCachePatchRange,findEvalSources,seqStrLen,onEvalEnter,CACHE_A_NEW,CACHE_A_OLD,CACHE_B_NEW,CACHE_B_OLD,st:function(){return {clcsDone,frDone,hhDone};}};',sandbox);
-const T=sandbox.__t; let fail=0; vm.runInContext('AS_MIN_RANGE=0;',sandbox);
+vm.createContext(sandbox); vm.runInContext(code+'\n;this.__t={aScanAll,runSteps,fastCLCS,fastHH,fastADK,hhPatchSource,noCachePatchRange,findEvalSources,seqStrLen,onEvalEnter,CACHE_A_NEW,CACHE_A_OLD,CACHE_B_NEW,CACHE_B_OLD,st:function(){return {clcsDone,frDone,hhDone};}};',sandbox);
+const T=sandbox.__t; let fail=0;
+function hookPatch(base,size,tag){ let n=-1; T.hhPatchSource(base,size,tag,(c)=>{n=c;}); flushAsync(); return n; }   /* async hook patcher, drained */ vm.runInContext('AS_MIN_RANGE=0;',sandbox);
 function ok(c,m){ console.log((c?'PASS ':'FAIL ')+m); if(!c)fail++; }
 // Lay out a V8 SeqOneByteString: map | hash | length | chars ; return untagged address
 function v8str(text){ const b=Buffer.from(text,'latin1'); const a=alloc(12+b.length); MEM.writeUInt32LE(0xdead0001,a); MEM.writeUInt32LE(0,a+4); MEM.writeUInt32LE(b.length,a+8); b.copy(MEM,a+12); return a; }
@@ -64,7 +65,7 @@ ok(found.length===1 && found[0].p.o===sA && found[0].len===hhMod.length, 'findEv
 const before=hhMod.length;
 T.onEvalEnter({r0:new P(alloc(64)), r1:new P(info), r2:new P(alloc(64))});
 ok(strAt(sA)===hhMod && pendingDrain.length===1, 'onEnter only queues (no scanning on the eval thread); drain scheduled');
-pendingDrain.shift()();                                  // Frida thread runs the deferred targeted scan
+pendingDrain.shift()(); flushAsync();                    // Frida thread runs the deferred scan; worker scans complete
 const after=strAt(sA);
 ok(after.length===before, 'source length preserved');
 ok(after.includes('doRouteOnFetchedInterstitial:fetchDgsData"}),!0){p.next=24;break}'), 'route2 guard !v -> !0');
@@ -74,15 +75,15 @@ ok(after.includes('(y=null!=f&&0,w=null!=h&&0)'), 'render gates forced to 0');
 ok(/MHU_VERIFY_TRAVEL,render:function\(e\)\{return null; *\nreturn/.test(after), 'MHU render -> return null');
 const st=T.st(); ok(st.clcsDone&&st.frDone&&st.hhDone, 'done-flags set for the fallback scanners');
 // idempotent second pass (re-eval of an already patched string) writes nothing
-ok(T.hhPatchRange(new P(sA+12), before, '#again')===0, 'second pass is a no-op (idempotent)');
+ok(hookPatch(new P(sA+12), before, '#again')===0, 'second pass is a no-op (idempotent)');
 // a FRESH unpatched copy (re-eval on next episode) is patched again
-const sB=v8str(hhMod); ok(T.hhPatchRange(new P(sB+12), before, '#fresh')>0 && strAt(sB).includes('!0){p.next=24'), 'fresh re-evaluated copy gets patched too');
+const sB=v8str(hhMod); ok(hookPatch(new P(sB+12), before, '#fresh')>0 && strAt(sB).includes('!0){p.next=24'), 'fresh re-evaluated copy gets patched too');
 
 // 2) Real bootstrap snippet from libnetflix.so 13.0.1/25028: cache producers neutered, still parses
 const snip=SNIP?fs.readFileSync(SNIP,'latin1'):('const cr=globalThis.console\ncr.trace=(...e)=>cr.info(...e),'+T.CACHE_A_OLD.replace(/ +$/,'')+',nr.gibbon.addEventListener("uiLoaded",(()=>{!function e(t,r,s){const i=Date.now()\nfor(;t.length&&Date.now()-i<r;){const e=t.pop()\n'+T.CACHE_B_OLD+'}t.length&&nr.setTimeout(e.bind(null,t,r,s),s)}(nr.script.scripts(),250,500)}))}()');
 ok(snip.includes(T.CACHE_A_OLD) && snip.includes(T.CACHE_B_OLD), (SNIP?'real APK':'synthetic')+' bootstrap contains both cache anchors verbatim');
 const sC=v8str(pad(1100)+snip);
-const nC=T.hhPatchRange(new P(sC+12), MEM.readUInt32LE(sC+8), '#boot'); const outC=strAt(sC);
+const nC=hookPatch(new P(sC+12), MEM.readUInt32LE(sC+8), '#boot'); const outC=strAt(sC);
 ok(nC===2 && outC.includes('nr.script.clearScriptCache()') && outC.includes('&&void 0') && !outC.includes('e.cache('), 'bootstrap: cache listener -> clearScriptCache(), uiLoaded cache(100) -> no-op');
 ok(T.CACHE_A_NEW.length===T.CACHE_A_OLD.length && T.CACHE_B_NEW.length===T.CACHE_B_OLD.length, 'cache replacements are length-preserving');
 // syntax check of the rewritten bootstrap expression region (from "const cr=" to the end of the IIFE)
@@ -163,6 +164,19 @@ function pat8(x){ return x.split('').map(c=>('0'+c.charCodeAt(0).toString(16)).s
   ok(order.join()==='a,b,c,done', 'remaining steps each run on their own tick, then done'); }
 sandboxRanges=()=>[]; timers.length=0;
 
+// 2e') the eval hook patches the AD code in a fresh source too (same handlers), and its jobs jump the queue
+{ const advSrc2='r.adverts=(0,m._)({},r.manifest.adverts,{adBreaks:(null==(h=r.manifest.adverts.adBreaks)?void 0:h.map(function(e,t){var i=c.normalize(e.locationMs),n=(0,tO.$b)(e.ads);return 1}))})';
+  const m3=v8str(pad(200)+advSrc2+pad(200)); vm.runInContext('advDone=false;',sandbox);
+  const nAd=hookPatch(new P(m3+12), MEM.readUInt32LE(m3+8), '#ad');
+  ok(nAd>=1 && /null==\(h=\[\] +\)\?void 0:h\.map/.test(strAt(m3)), 'hook patched the adverts normaliser in a fresh source ('+nAd+' edit)');
+  // priority: hook (0) beats sweep (1) beats diag (2) when a slot frees
+  scanCalls.length=0; const rr2=[]; for(let k=0;k<4;k++) rr2.push({base:new P(alloc(4096)),size:4096});
+  T.aScanAll(rr2,pat8('SWEEPSWEEP'),()=>{},()=>{});               // priority 1: 2 start, 2 queue
+  T.hhPatchSource(new P(alloc(4096)),4096,'#prio',()=>{});          // priority 0 jobs queue behind the running two
+  asyncQ.shift()();                                                  // a slot frees: next started must be a HOOK job (not a sweep job)
+  ok(scanCalls[2]!==pat8('SWEEPSWEEP'), 'a hook job starts before the remaining sweep jobs');
+  flushAsync(); }
+
 // 2f) async ad-kill (ADV2 + MASTER2 + B + DAI) against the exact shapes dumped from the TV (killlog5)
 { const advSrc='r.adverts=(0,m._)({},r.manifest.adverts,{adBreaks:(null==(h=r.manifest.adverts.adBreaks)?void 0:h.map(function(e,t){var i=c.normalize(e.locationMs),n=(0,tO.$b)(e.ads);return(0,m._)({},e,{viewableAdBreakIndex:t,unnormalizedLocationMs:e.locationMs,locationMs:i.ms,duration:n,location:i,source:"viewable"}))}))';
   const masterBody='var t=this.ntsManager.getAds(e);if(t){var i,n,r,s=!!(null==(r=e.manifest)||null==(n=r.adverts)?void 0:n.daiSupported);i=t.map(function(e){return new eX(e,ed({canHydrate:s,isHydrated:!1,isSkippable:!1}))}),i=this.defaultAdBreakEnricher.enrichAds(i,e),i=this.applyDaiPrefetch(i,e);var a=(0,z.Us)(e)&&e.isOrWasLive;e.adverts&&e.adverts.adBreaks.length&&(!a||this.config.enableLivePreRolls)&&(i=this.mergeReplacedAds(e.adverts,i,e))}else{if(!e.adverts||!e.adverts.adBreaks.length)return;i=e.adverts.adBreaks.map(function(e){var t,i=(0,em.ik)(e);return new eX(i,ed({isHydrated:!!i.ads||i.embedded,canHydrate:!!i.adBreakToken&&!i.embedded,isPreroll:null!=(t=i.isPreroll)&&t}))})}return i=this.adBreakHydrator.enrichAds(i,e)';
@@ -199,7 +213,7 @@ sandboxRanges=()=>[]; timers.length=0;
 
 // 3) Unrelated large source: nothing written
 const sD=v8str(pad(5000)+'function foo(){return 1}'+pad(5000));
-ok(T.hhPatchRange(new P(sD+12), MEM.readUInt32LE(sD+8), '#x')===0, 'unrelated script untouched');
+ok(hookPatch(new P(sD+12), MEM.readUInt32LE(sD+8), '#x')===0, 'unrelated script untouched');
 // 4) seqStrLen rejects short / binary / two-byte strings
 const sE=v8str('short'); ok(T.seqStrLen(new P(sE))===0, 'rejects short strings');
 const tw=alloc(12+4000); MEM.writeUInt32LE(2000,tw+8); for(let i=0;i<4000;i+=2){MEM[tw+12+i]=0x61;MEM[tw+13+i]=0;} ok(T.seqStrLen(new P(tw))===0, 'rejects two-byte (UTF-16) strings');

@@ -107,3 +107,17 @@ within ~1s of being found, route2 +24.5s) but ads leaked through. Two causes:
 `i=e.adverts.adBreaks.map(` -> `i=[]<spaces>.map(` (MASTER2: M2 first, M1 second; M1 alone is the old v1 crash).
 B (pause) and DAI exact anchors are kept (B still matches). Host test executes the real function text before and
 after patching: original yields the ad breaks, patched yields `[]`, ad-free content still returns `undefined`.
+
+## Eval hook, second attempt (async patcher, covers ads too) — device result pending
+
+killlog6 (build M): every layer landed but slowly on a cold start (gate +19s, HH +33s, route2 +36s, ads +19-40s):
+the sweeps cost ~11 range-scans per cycle on ~550 ranges. A user who presses play within ~35s of launch beats them,
+and a re-evaluated play-time module costs another sweep cycle. Patching each script as Netflix evaluates it removes
+the scan latency. The first hook builds hung at the splash only because the JS lock was held by multi-second
+synchronous scans (host repro in the table above); all household/ad scanning is now async, so the hook's onEnter
+(which only locates the source String and queues it) no longer waits long for the lock.
+
+`hhPatchSource` runs the same match handlers as the sweeps (household + ad) over the one source string as async
+worker-thread scans at TOP priority (priority 0 > sweeps 1 > diagnostics 2), so a multi-MB source never blocks Netflix's
+eval thread or Frida's JS thread. Opt-in (`EVALHOOK_ENABLED`), armed `EVAL_ARM_DELAY_MS` after launch. Verify in the log:
+`EVALHOOK armed`, then `PATCH EVAL#n:` / `EVAL#n: k edit(s) applied` lines when a module is evaluated.
