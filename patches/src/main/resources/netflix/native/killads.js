@@ -547,7 +547,7 @@ var HHD_MARKERS=['pushClcsInterstitialGate','doRouteOnFetchedInterstitial','lcsI
 var HHD_BEFORE=360, HHD_AFTER=840, HHD_MAX=5;
 var hhdSeen={}, hhdCount={}, _hhdN=0, _hhdDone=false;
 function hhStatus(){ if(!HH_DIAG) return;
-  L('HHSTATUS +'+Math.round((Date.now()-_fcT0)/1000)+'s clcs='+clcsDone+' route2='+frDone+' hh='+hhDone+' mhu='+mhuHits+'/'+MHU_PATS.length+' fcPass='+_fcN+' hhPass='+_fastHHn+' scans='+_asRun+'+'+_asQH.length+'/'+_asQL.length+' eval='+_evalN);
+  L('HHSTATUS +'+Math.round((Date.now()-_fcT0)/1000)+'s clcs='+clcsDone+' route2='+frDone+' hh='+hhDone+' mhu='+mhuHits+'/'+MHU_PATS.length+' ads[adv='+advDone+' master='+masterDone+' b='+bDone+' dai='+daiDone+'] fcPass='+_fcN+' hhPass='+_fastHHn+' scans='+_asRun+'+'+_asQH.length+'/'+_asQL.length+' eval='+_evalN);
   if(Date.now()-_fcT0<300000) setTimeout(hhStatus,5000); }
 function looksLikeJs(c){ var n=0; for(var i=0;i<c.length&&n<8;i++){ var ch=c.charCodeAt(i); if(ch===59||ch===123||ch===125||ch===40) n++; } return n>=8; }
 function hhDiag(){ if(!HH_DIAG||_hhdDone) return; _hhdN++;
@@ -567,6 +567,70 @@ function hhDiag(){ if(!HH_DIAG||_hhdDone) return; _hhdN++;
       function(){ if(--left===0) after(); }, true); }
   for(var mi=0;mi<HHD_MARKERS.length;mi++) if((hhdCount[HHD_MARKERS[mi]]||0)<HHD_MAX) one(HHD_MARKERS[mi]);
   if(left===0) after(); }
+
+// ---------- (ADK) async ad-kill for household builds, re-anchored to the 13.0.1 JS served in 2026-10 ----------
+// killlog5 (device): ads leaked through. Two causes. (1) the sync ad-kill (apply/fastMASTER) was deferred
+// by my own household gate and barely ran. (2) Netflix's served JS drifted: the manifest->adverts normaliser
+// is now `null==(h=r.manifest.adverts.adBreaks)?void 0:h.map(function(e,t){var i=c.normalize(e.locationMs)`
+// (1-char local, args (e,t); the old anchors need a 2-char local and (a,b)), and getAdMetadata's else branch
+// is now `else{if(!e.adverts||!e.adverts.adBreaks.length)return;i=e.adverts.adBreaks.map(function(e){...` (old
+// M2 looked for a bare `else return;` -> 'MASTERw M2-MISS').
+// Same two kills as before, re-expressed; each is verify-before-write, length-preserving, rename-tolerant
+// (locals are matched by regex, not hardcoded) and runs on the async pool, persistently, so a re-evaluated
+// (fresh, unpatched) copy is caught too:
+//  ADV2   adverts.adBreaks source:  h=r.manifest.adverts.adBreaks  ->  h=[]<spaces>   (every ad break list is empty)
+//  MASTER2 getAdMetadata: `if(t){`->`if(0){` (skip the legacy getAds branch) AND the else branch's
+//         `i=e.adverts.adBreaks.map(`->`i=[]<spaces>.map(` so it yields a VALID empty array (never the v1
+//         undefined crash); the no-adverts `return;` is the original ad-free path. M2 is written first: alone it
+//         is harmless, M1 alone is not.
+//  B, DAI exact anchors still match on 13.0.1 (B landed in earlier logs) and are kept.
+var ADK_ADV_ANCH='.manifest.adverts.adBreaks)?void 0:', ADK_ADV_SRC='.manifest.adverts.adBreaks';
+var ADK_M1_PAT=pat('getAds(')+' ?? '+pat(');if(')+' ?? '+pat('){var ');
+var ADK_M2_RE=/else\{if\(!([A-Za-z_$][\w$]*)\.adverts\|\|!\1\.adverts\.adBreaks\.length\)return;([A-Za-z_$][\w$]*)=\1\.adverts\.adBreaks\.map\(function\(/;
+var ADK_M2_DONE_RE=/else\{if\(!([A-Za-z_$][\w$]*)\.adverts\|\|!\1\.adverts\.adBreaks\.length\)return;([A-Za-z_$][\w$]*)=\[\] +\.map\(function\(/;
+var _adkN=0, _adkLogged={};
+function adkPad(txt,len){ while(txt.length<len) txt+=' '; return txt; }
+function adkAdv(rs,done){
+  aScanAll(rs,pat(ADK_ADV_ANCH),function(a){
+    var pre=null,fwd=null; try{ pre=a.sub(40).readCString(40); fwd=a.add(ADK_ADV_ANCH.length).readCString(220); }catch(e){ return; }
+    var m=/null==\(([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)$/.exec(pre); if(!m) return;
+    if(fwd.indexOf(m[1]+'.map(function(')!==0||fwd.indexOf('locationMs')<0) return;   // the ad-break normaliser only
+    var len=m[2].length+ADK_ADV_SRC.length, t=a.sub(m[2].length);
+    Memory.protect(t,len,'rw-'); t.writeByteArray(bytesOf(adkPad('[]',len))); advDone=true;
+    L('PATCH ADK ADV: adverts.adBreaks source '+m[2]+ADK_ADV_SRC+'->[] (empty all ad breaks) @'+t+' now='+JSON.stringify(t.sub(8).readCString(len+40)));
+  },done); }
+function adkMaster(rs,done){
+  aScanAll(rs,ADK_M1_PAT,function(a){
+    var ctx=null; try{ ctx=a.readCString(1100); }catch(e){ return; }
+    var m1=/^getAds\(([A-Za-z_$][\w$]*)\);if\(([A-Za-z_$])\)\{var /.exec(ctx); if(!m1) return;
+    var m2=ADK_M2_RE.exec(ctx), m2b=m2?null:ADK_M2_DONE_RE.exec(ctx);
+    if(!m2&&!m2b){ if(!_adkLogged.m2){ _adkLogged.m2=true; L('ADK master: getAdMetadata else-branch shape UNEXPECTED, no write: '+JSON.stringify(ctx.slice(0,700))); } return; }
+    if(m2){ var xl=m2[1].length, tail=xl+'.adverts.adBreaks.map(function('.length, idx=m2.index+m2[0].length-tail, tlen=xl+'.adverts.adBreaks'.length;
+      if(ctx.substr(idx,tlen)!==m2[1]+'.adverts.adBreaks') return;
+      var t2=a.add(idx); Memory.protect(t2,tlen,'rw-'); t2.writeByteArray(bytesOf(adkPad('[]',tlen)));
+      L('PATCH ADK MASTER: else-branch '+m2[1]+'.adverts.adBreaks.map -> [].map @'+t2); }
+    var t1=a.add(13); Memory.protect(t1,1,'rw-'); t1.writeByteArray([0x30]);
+    var vb=-1; try{ vb=t1.readU8(); }catch(e){}
+    masterDone=true; m1Done=true; m2Done=true;
+    L('PATCH ADK MASTER: getAdMetadata if('+m1[2]+')->if(0) @'+t1+' verify='+(vb===0x30?'OK':'FAIL('+vb+')'));
+  },done); }
+function adkB(rs,done){
+  aScanAll(rs,pat(B_ANCHOR),function(a){ var t=a.add(7), cur=null; try{ cur=t.readCString(B_OLD.length); }catch(e){}
+    if(cur!==B_OLD) return; Memory.protect(t,B_NEW.length,'rw-'); t.writeByteArray(bytesOf(B_NEW)); bDone=true;
+    L('PATCH ADK B: pause z() displayAd->void0 @'+t); },done); }
+function adkDai(rs,done){
+  aScanAll(rs,pat(DAI_ANCHOR),function(a){ var t=a.add(DAI_OFF), cur=null; try{ cur=t.readCString(1); }catch(e){}
+    if(cur!==DAI_EXP) return; Memory.protect(t,1,'rw-'); t.writeByteArray([0x3d]); daiDone=true;
+    L('PATCH ADK DAI: applyDaiPrefetch 0!==->0=== @'+t); },done); }
+// Persistent loop. Until the kills have landed once: every anchor each cycle, quickly. Afterwards a cheap
+// detector for fresh (re-evaluated, unpatched) copies: the two main anchors every 5s, B/DAI every 4th cycle.
+function fastADK(){ if(!HH_ENABLED) return; _adkN++;
+  var rs=null; try{ rs=Process.enumerateRanges('rw-'); }catch(e){}
+  if(!rs){ setTimeout(fastADK,2000); return; }
+  var light=(advDone&&masterDone&&bDone)&&(_adkN%4!==0), pend=light?2:4;
+  function fin(){ if(--pend>0) return;
+    setTimeout(fastADK, (advDone&&masterDone&&bDone)?5000:(_adkN<60?2500:8000)); }
+  adkAdv(rs,fin); adkMaster(rs,fin); if(!light){ adkB(rs,fin); adkDai(rs,fin); } }
 
 // Read-only diagnostic: find each CLCS_MARKERS string in the JS heap and dump ~100 chars of context
 // per hit so the runtime consumer site can be identified from logcat. Runs only while HH_ENABLED and
@@ -836,7 +900,7 @@ function observe(){ if(hhYield()){ setTimeout(observe,1000); return; } cyc++;
 }
 
 L('killads ready (A/A2/ADV/DAI/MASTER ad-kill + B pause, single-shot; ad+resume monitor)');
-setTimeout(apply,5000);
+if(!HH_ENABLED) setTimeout(apply,5000);   // household builds: ad-kill runs async (fastADK)
 if(!HH_ENABLED) setTimeout(observe,9000);
 else L('OBS monitor off in household builds (4 synchronous full-heap scans per cycle starved the household patches)');
 // ANCHOR MAP (drift self-detection) — periodic at-a-glance hook state on its OWN timer, so the summary
@@ -849,10 +913,13 @@ function anchorMap(){ _amN++;
   if(_amN<8) setTimeout(anchorMap,20000);
 }
 setTimeout(anchorMap,15000);
+if(!HH_ENABLED){
 L('fastMASTER armed (getAdMetadata early race-win scanner — beat first-title pre/mid-roll)');
 setTimeout(fastMASTER,200);
 L('dumpMASTER armed (recon: dump getAdMetadata body if both exact+wildcard MASTER miss — #166)');
 setTimeout(dumpMASTER,2000);
+}
+if(HH_ENABLED){ L('fastADK armed (async ad-kill: ADV2 + MASTER2 + B + DAI, rename-tolerant)'); setTimeout(fastADK,300); }
 if(HH_ENABLED){ L('fastHH armed (household prompt suppression, early race-win scanner)'); setTimeout(fastHH,200);
 }
 if(CLCS_PROBE_ENABLED){ L('clcsProbe armed (DEV recon: locate runtime CLCS interstitial consumer — Nikflix seam)'); setTimeout(clcsProbe,200); }

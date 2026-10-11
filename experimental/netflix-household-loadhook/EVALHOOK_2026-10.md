@@ -90,3 +90,20 @@ within ~10s each, queue draining between cycles).
 Still unknown (needs a device log): which route shows the household screen right after profile select —
 the dispatcher labels are broken but the screen still came up. `HHDIAG` lines dump the real routing JS
 (`pushClcsInterstitialGate` callers seen so far: the `growthPush` saga and the playback-exit path).
+
+## Ads on current 13.0.1 JS (killlog5): re-anchored ad-kill, run on the async pool
+
+K fixed the household layers on device (gate labels +15.6s, all 4 account-sharing edits, all 16 MHU screens
+within ~1s of being found, route2 +24.5s) but ads leaked through. Two causes:
+1. The sync ad-kill (`apply`/`fastMASTER`) was deferred by the household gate and barely ran.
+2. Netflix's served JS drifted, so the exact anchors no longer match (dumps in the log):
+   - manifest->adverts normaliser: `null==(h=r.manifest.adverts.adBreaks)?void 0:h.map(function(e,t){var i=c.normalize(e.locationMs)` —
+     1-char local and args `(e,t)`; the old ADV/ADVw anchors need a 2-char local and `(a,b)`.
+   - `getAdMetadata`: `getAds(e);if(t){...}else{if(!e.adverts||!e.adverts.adBreaks.length)return;i=e.adverts.adBreaks.map(function(e){...` —
+     the else branch is no longer a bare `else return;` (old M2), hence `MASTERw M2-MISS`.
+
+`fastADK` (household builds) replaces them with regex-matched, length-preserving, verify-before-write edits:
+`h=r.manifest.adverts.adBreaks` -> `h=[]<spaces>` (ADV2); `if(t){` -> `if(0){` plus the else branch's
+`i=e.adverts.adBreaks.map(` -> `i=[]<spaces>.map(` (MASTER2: M2 first, M1 second; M1 alone is the old v1 crash).
+B (pause) and DAI exact anchors are kept (B still matches). Host test executes the real function text before and
+after patching: original yields the ad breaks, patched yields `[]`, ad-free content still returns `undefined`.

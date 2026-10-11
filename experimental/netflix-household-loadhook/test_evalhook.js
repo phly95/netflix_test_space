@@ -26,9 +26,14 @@ function flushAsync(){ while(asyncQ.length) asyncQ.shift()(); }
 const Memory={ protect(){return true;},
   scan(base,size,patStr,cb){ scanCalls.push(patStr); inFlight++; maxInFlight=Math.max(maxInFlight,inFlight); let hits=[]; try{ hits=Memory.scanSync(base,size,patStr); }catch(e){ asyncQ.push(()=>{ inFlight--; cb.onError(String(e)); }); return; }
     asyncQ.push(()=>{ inFlight--; hits.forEach(h=>cb.onMatch(h.address,h.size)); cb.onComplete(); }); }, allocUtf8String(s){ const a=alloc(s.length+1); MEM.write(s,a,'latin1'); return new P(a); },
-  scanSync(base,size,patStr){ scanSizes.push(size); const needle=Buffer.from(patStr.split(' ').map(h=>parseInt(h,16)));
-    base.chk(size); const out=[]; let i=base.o; const end=base.o+size;
-    while(true){ i=MEM.indexOf(needle,i); if(i<0||i+needle.length>end)break; out.push({address:new P(i),size:needle.length}); i++; } return out; } };
+  scanSync(base,size,patStr){ scanSizes.push(size); const toks=patStr.split(' '); base.chk(size); const out=[]; const end=base.o+size;
+    if(!toks.includes('??')){ const needle=Buffer.from(toks.map(h=>parseInt(h,16))); let i=base.o;
+      while(true){ i=MEM.indexOf(needle,i); if(i<0||i+needle.length>end)break; out.push({address:new P(i),size:needle.length}); i++; } return out; }
+    // wildcard pattern ('??' matches any byte), like Frida's match patterns: anchor on the first literal run
+    const lits=toks.map(h=>h==='??'?-1:parseInt(h,16)); let first=lits.findIndex(x=>x>=0); let run=[]; for(let k=first;k<lits.length&&lits[k]>=0;k++) run.push(lits[k]);
+    const rb=Buffer.from(run); let i=base.o+first;
+    while(true){ i=MEM.indexOf(rb,i); if(i<0)break; const st=i-first; if(st+lits.length>end)break; if(st>=base.o){ let okm=true; for(let k=0;k<lits.length;k++){ if(lits[k]>=0&&MEM[st+k]!==lits[k]){okm=false;break;} } if(okm) out.push({address:new P(st),size:lits.length}); } i++; }
+    return out; } };
 function strAtRaw(a,n){ return MEM.toString('latin1',a,a+n); }
 const sandbox={ console, Memory, ptr, NativePointer:P, Date, JSON, Math, Object, String, Number, Uint8Array, parseInt, isNaN,
   NativeFunction:function(){ return function(lvl,tag,msg){ logs.push(msg.readCString()); return 0; }; },
@@ -37,7 +42,7 @@ const sandbox={ console, Memory, ptr, NativePointer:P, Date, JSON, Math, Object,
   Interceptor:{ attach(){ throw new Error('no attach in test'); } },
   setTimeout(fn,ms){ if(fn&&fn.name==='drainEvalQ') pendingDrain.push(fn); else timers.push({fn,ms}); return 0; } };  // timers run on demand
 let code=fs.readFileSync(SRC,'latin1').replace('HH_ENABLED=false','HH_ENABLED=true').replace(/var HH_NOCACHE=\d;/,'var HH_NOCACHE=2;');  // exercise the full cache path
-vm.createContext(sandbox); vm.runInContext(code+'\n;this.__t={aScanAll,runSteps,fastCLCS,fastHH,hhPatchRange,noCachePatchRange,findEvalSources,seqStrLen,onEvalEnter,CACHE_A_NEW,CACHE_A_OLD,CACHE_B_NEW,CACHE_B_OLD,st:function(){return {clcsDone,frDone,hhDone};}};',sandbox);
+vm.createContext(sandbox); vm.runInContext(code+'\n;this.__t={aScanAll,runSteps,fastCLCS,fastHH,fastADK,hhPatchRange,noCachePatchRange,findEvalSources,seqStrLen,onEvalEnter,CACHE_A_NEW,CACHE_A_OLD,CACHE_B_NEW,CACHE_B_OLD,st:function(){return {clcsDone,frDone,hhDone};}};',sandbox);
 const T=sandbox.__t; let fail=0; vm.runInContext('AS_MIN_RANGE=0;',sandbox);
 function ok(c,m){ console.log((c?'PASS ':'FAIL ')+m); if(!c)fail++; }
 // Lay out a V8 SeqOneByteString: map | hash | length | chars ; return untagged address
@@ -157,6 +162,40 @@ function pat8(x){ return x.split('').map(c=>('0'+c.charCodeAt(0).toString(16)).s
   timers.shift().fn(); timers.shift().fn(); timers.shift().fn();
   ok(order.join()==='a,b,c,done', 'remaining steps each run on their own tick, then done'); }
 sandboxRanges=()=>[]; timers.length=0;
+
+// 2f) async ad-kill (ADV2 + MASTER2 + B + DAI) against the exact shapes dumped from the TV (killlog5)
+{ const advSrc='r.adverts=(0,m._)({},r.manifest.adverts,{adBreaks:(null==(h=r.manifest.adverts.adBreaks)?void 0:h.map(function(e,t){var i=c.normalize(e.locationMs),n=(0,tO.$b)(e.ads);return(0,m._)({},e,{viewableAdBreakIndex:t,unnormalizedLocationMs:e.locationMs,locationMs:i.ms,duration:n,location:i,source:"viewable"}))}))';
+  const masterBody='var t=this.ntsManager.getAds(e);if(t){var i,n,r,s=!!(null==(r=e.manifest)||null==(n=r.adverts)?void 0:n.daiSupported);i=t.map(function(e){return new eX(e,ed({canHydrate:s,isHydrated:!1,isSkippable:!1}))}),i=this.defaultAdBreakEnricher.enrichAds(i,e),i=this.applyDaiPrefetch(i,e);var a=(0,z.Us)(e)&&e.isOrWasLive;e.adverts&&e.adverts.adBreaks.length&&(!a||this.config.enableLivePreRolls)&&(i=this.mergeReplacedAds(e.adverts,i,e))}else{if(!e.adverts||!e.adverts.adBreaks.length)return;i=e.adverts.adBreaks.map(function(e){var t,i=(0,em.ik)(e);return new eX(i,ed({isHydrated:!!i.ads||i.embedded,canHydrate:!!i.adBreakToken&&!i.embedded,isPreroll:null!=(t=i.isPreroll)&&t}))})}return i=this.adBreakHydrator.enrichAds(i,e)';
+  const mod=pad(300)+advSrc+pad(200)+'function G(e){'+masterBody+'}'+pad(200)+'x=e.advs?void 0:e.displayAd; y=function(){return e&&0!==e.size?a.map(function(a){return a})}'+pad(200);
+  const mm=v8str(mod); sandboxRanges=()=>[{base:new P(mm),size:mod.length+12}];
+  vm.runInContext('advDone=false;masterDone=false;bDone=false;daiDone=false;',sandbox);
+  // `void 0:e.displayAd` / DAI anchors need their exact forms:
+  const mod2=mod.replace('x=e.advs?void 0:e.displayAd;','x=e.advs?void 0:e.displayAd;').replace('y=function(){return e&&0!==e.size?a.map(function(a){return a})}','y=function(){return e&&0!==e.size?a.map(function(a){return a})}');
+  timers.length=0; vm.runInContext('fastADK()',sandbox); flushAsync();
+  const out=strAt(mm);
+  ok(out.length===mod.length, 'ad-kill is length preserving');
+  ok(/null==\(h=\[\] +\)\?void 0:h\.map\(function\(e,t\)\{var i=c\.normalize/.test(out), 'ADV2: adverts.adBreaks source is now h=[]');
+  ok(out.includes('getAds(e);if(0){var i,n,r,s=')&&/i=\[\] +\.map\(function\(e\)\{var t,i=\(0,em\.ik\)\(e\)/.test(out), 'MASTER2: if(t)->if(0) and the else-branch map source is []');
+  ok(out.includes('x=e.advs?void 0:void 0     ;')||out.includes('void 0:void 0     '), 'B pause displayAd -> void 0');
+  ok(out.includes('return e&&0===e.size?a.map'), 'DAI prefetch guard flipped');
+  const st3=vm.runInContext('({advDone,masterDone,bDone,daiDone})',sandbox);
+  ok(st3.advDone&&st3.masterDone&&st3.bDone&&st3.daiDone, 'all four ad-kill flags set');
+  ok(timers.some(t=>t.ms===5000), 'once all landed, ad-kill drops to a light 5s detector cadence');
+  // SEMANTICS: run the original and the patched getAdMetadata with stubs
+  const mk=(txt)=>{ const body=txt.slice(txt.indexOf('function G(e){')+14, txt.indexOf('}'+pad(200)+'x=')); 
+    return new Function('z','em','eX','ed',  'return function(e){'+body+'}');   };
+  const origBody='function G(e){'+masterBody+'}'; const patchedFn=mk(out), origFn=mk(mod);
+  const stubs=()=>({ z:{Us:()=>false}, em:{ik:(x)=>x}, eX:function(i,o){ this.i=i; }, ed:(o)=>o });
+  const mkThis=(legacy)=>({ ntsManager:{getAds:()=>legacy}, defaultAdBreakEnricher:{enrichAds:(i)=>i}, applyDaiPrefetch:(i)=>i, mergeReplacedAds:(a,i)=>i, config:{enableLivePreRolls:true}, adBreakHydrator:{enrichAds:(i)=>i} });
+  const run=(fn,legacy,ev)=>{ const S=stubs(); return fn(S.z,S.em,S.eX,S.ed).call(mkThis(legacy),ev); };
+  const evAds={manifest:{adverts:{}}, adverts:{adBreaks:[{adBreakToken:'x',ads:[1]},{adBreakToken:'y'}]}};
+  const evNone={manifest:{}, adverts:undefined};
+  const legacyAds=[{id:1},{id:2}];
+  ok(Array.isArray(run(origFn,null,evAds))&&run(origFn,null,evAds).length===2, 'original: DAI ad breaks produce 2 ad breaks (the leak)');
+  ok(Array.isArray(run(patchedFn,null,evAds))&&run(patchedFn,null,evAds).length===0, 'patched: same input yields an EMPTY array (no ads, no crash)');
+  ok(run(origFn,legacyAds,evAds).length>0 && run(patchedFn,legacyAds,evAds).length===0, 'patched: legacy getAds() ads are suppressed too');
+  ok(run(origFn,null,evNone)===undefined && run(patchedFn,null,evNone)===undefined, 'ad-free content: both return undefined (original ad-free path unchanged)');
+  sandboxRanges=()=>[]; timers.length=0; }
 
 // 3) Unrelated large source: nothing written
 const sD=v8str(pad(5000)+'function foo(){return 1}'+pad(5000));
