@@ -214,4 +214,6 @@ that with `household landed=true`. Keep the K-prio APK: it is the only way to bu
 | `8906c0e`…`673d10c` | earlier session: eval hook, async scan pool, household-first, `fastADK` |
 | `af03dab` | ad-kill held until household lands; four queues with fair share; big-first; diagnostics (P) |
 | `deb4e74` | MASTER2 valid-empty, ADV opt-in, MHU not required, ADDIAG, `HH_DUMPS` (Q) |
-| this commit | these docs; `testing/scripts/` APK tooling and log-timeline tool; `lib.sh` Java-banner fix; corrected range-count notes |
+| `1a1a4af` | fastADK arming log no longer claims ADV; stale range-count comment fixed (log text/comment only) |
+| `41e9995` | `testing/scripts/` APK swap/sign/split tooling and the KILL log timeline tool; `lib.sh` Java-banner fix |
+| `518f3fe` | these docs |
