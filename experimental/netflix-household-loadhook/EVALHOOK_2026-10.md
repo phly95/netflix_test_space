@@ -3,6 +3,11 @@
 Target: Netflix ATV `13.0.1 build 25028` (armeabi-v7a). Built and host-tested only. **Not yet
 verified on a device.**
 
+> **Status (2026-10-11, after device logs killlog5-7 — see the last section).** The eval hook and
+> `HH_NOCACHE` described under "Fix" below are **opt-in and off by default** (`EVALHOOK_ENABLED=false`,
+> `HH_NOCACHE=0`); the Morphe patch only flips `HH_ENABLED`. The shipping household suppression is the
+> async heap sweeps, now scheduled household-first.
+
 ## Symptom
 With "Suppress Household Prompt" on, the household prompt still shows **a second or two after an
 episode or video starts**.
@@ -121,3 +126,102 @@ synchronous scans (host repro in the table above); all household/ad scanning is 
 worker-thread scans at TOP priority (priority 0 > sweeps 1 > diagnostics 2), so a multi-MB source never blocks Netflix's
 eval thread or Frida's JS thread. Opt-in (`EVALHOOK_ENABLED`), armed `EVAL_ARM_DELAY_MS` after launch. Verify in the log:
 `EVALHOOK armed`, then `PATCH EVAL#n:` / `EVAL#n: k edit(s) applied` lines when a module is evaluated.
+
+## Device logs killlog5-7: why household came back at profile select (2026-10-11)
+
+killlog5 is build `a4ca56a` (the "K-prio" APK: its bundled script is byte-identical to that commit with
+only `HH_ENABLED=true`, no eval hook, no cache patch) — household suppression worked. killlog6 added
+`fastADK` (`02fc47d`); killlog7 also had the eval hook on (armed at +8s). Seconds after launch:
+
+| Layer | killlog5 | killlog6 (+fastADK) | killlog7 (+hook) |
+|---|---|---|---|
+| Dispatcher labels broken | 15.6 | 19.1 | 19.8 |
+| HH flags (first) | 15.6 | 25.8 | 24.8 |
+| MHU 16/16 neutered | 21.5 | 31.7 | 30.4 |
+| HH all flipped | 23.0 | 33.1 | 31.4 |
+| Route 2 written | 26.6 | 36.5 | 33.8 |
+| Ad-kill ADV / MASTER | not running | 19.3 / 20.7 | 20.0 / 21.2 |
+
+- Everything but the dispatcher slid ~10s. Sweep backlog at +18s was 2,963 jobs (killlog5) vs 5,002
+  (killlog6). *Correction (2026-10-11, later):* a sweep is only 191 jobs (RANGESTAT: 191 of 595 rw- ranges are
+  >=32K), not the ~510 first assumed, so the 2,039-job difference is ~10 sweeps, more than one ad-kill cycle.
+  The ad-kill sweeps queued ahead of the household passes in the single FIFO queue are still the best-supported
+  cause (inference), and fixing that restored killlog5 timings in killlog9. In killlog6/7 the pool never drained
+  (diagnostic queue stuck at ~1,960 jobs, 0 HHDIAG dumps vs 18 in killlog5).
+- The playback code (route 2) and `getAdMetadata` are resident at boot, not loaded on play, so a video-start
+  check runs through the already-patched copy *if route 2 landed first*. The exposed window is a play before
+  route 2 lands (+26.6s good, +36.5s bad). Whether a later play re-evaluates the module is still unproven.
+- killlog5 HHDIAG (real routing JS): the gate-stack dispatcher (labels broken), plus direct
+  `pushClcsInterstitialGate` callers in the `growthPush` saga, the playback-exit path and
+  `pushClcsPostPlaybackInterstitialGate`; `QueryType.Lolomo` exists. killlog5 worked without covering them.
+- Eval hook (killlog7): 186 evals, **0 edits**; every patch came from the sweeps. It armed at +8s, probably
+  after the big boot modules, and it did not log whether the String walk found anything.
+- `libnetflix.so` in the working APK still has the hook prologue signature at `0x137626c` and both bootstrap
+  cache-producer strings verbatim, and contains none of the household JS (it is server-delivered).
+
+Changes made for build P (host tests: `node test_evalhook.js ../../patches/src/main/resources/netflix/native/killads.js`):
+1. `fastADK` is held until `clcsDone && hhDone && frDone && mhuHits>0` (safety timeout `ADK_HH_WAIT_MS`=30s).
+2. Four scan queues: hook 0, household 1, ad-kill 2, diagnostics 3. Once both families are queued they
+   *share* the pool (the family with fewer scans running goes next). Strict household priority was rejected:
+   the persistent household detectors alone use nearly the whole pool and would starve the ad-kill.
+3. `aScanAll` scans the biggest ranges first. `DAI` (never matched in any log) only runs in the first two
+   cycles and then every 12th; steady-state ad-kill cadence 5s -> 8s.
+4. Diagnostics: `RANGESTAT` (range count/bytes by size bucket, once), `RANGEHIT` (size of the range that held
+   each anchor), `EVALSRC#n` (length + head of located scripts, or r0-r2 when none), and HHSTATUS now shows
+   `scans=run+household/ads/diag`, `eval=calls/withSource` and `adk=held|on|idle`. Use RANGEHIT to pick
+   `AS_MIN_RANGE` from data.
+
+Next device run: capture through profile select and **two** plays, and note the wall-clock time of each press.
+Acceptance vs killlog5: gate <= +15.6s, HH/MHU landed before the select, route 2 <= +26.6s, ADV/MASTER
+within ~10s after `fastADK: starting`.
+
+## killlog8 (build P): household fixed, ads still leaking (2026-10-11)
+
+**Household: no prompt.** Dispatcher +17.5s, HH flags +18.6-23.5s, `fastADK` held until +30.0s (that was the
+30s safety timeout: it also required MHU, which stayed `0/16` all session; MHU is only the blank-screen fallback and
+the dispatcher + HH flags + route 2 sufficed, so build Q no longer requires it; route 2 landed +30.2s), then ADV +31.4s, MASTER +35.3s, B +40.3s. At +41-43s the sweep found and patched **51 more copies** of the
+dispatcher anchor in small (48KB) ranges (`PATCH CLCS(fast): ... x51`). Cause **unconfirmed**: it may be fresh module
+text re-created by the profile switch, or copies in the Frida runtime's own heap (the script text contains the
+anchor literal). killlog9 shows no such event, so do not rely on it.
+`RANGEHIT` sizes: dispatcher 1.9MB and 48KB, HH flags/render 256KB, route 2 and B 564KB, ad modules 4.6MB; 79 of
+the 191 scanned ranges (>=32K) hold 224 of 236MB. Keep `AS_MIN_RANGE`=32K (a 256K floor would have missed those 48KB
+hits); big-first ordering is the useful part.
+
+**Ads: leaked in pre-roll and mid-roll although every ad edit landed before the first play**, and no fresh player
+copy appeared afterwards (the ad detector re-matched only the already-patched copy). So the edits ran but were not
+enough. Root cause found by reading the code against the design notes: with ADV2 applied
+`adverts.adBreaks.length` is always 0, so MASTER2's kept `if(!e.adverts||!e.adverts.adBreaks.length)return;` guard
+fired for every title and `getAdMetadata` returned **undefined**: the half-emptied state the notes forbid
+("return a valid empty, never undefined"; the old M2 was `else b=[]`). The host test missed it because it fed the
+function a populated `adBreaks`. Not yet confirmed on device.
+
+Build Q changes:
+1. MASTER2 now also turns the early `return;` into a 7-byte no-op, so every title yields `[]` (order: map
+   source, guard, then `if(0)` last). New tests cover the ADV-emptied state and show the old guard returns
+   undefined in it.
+2. ADV2 is opt-in (`ADK_ADV_ENABLED=false`): the proven config killed ads with MASTER alone and left the
+   manifest normaliser intact; ADV removes the breaks themselves, which the Aug notes link to `tvq-pb-101`.
+3. `ADDIAG` (read-only recon on the ad queue, after the ad-kill starts): dumps the JS around `getAdMetadata`,
+   `emptyAdBreakComplete`, `enrichAdsWithEmbeddedExtension`, `createAdsPlaygraph`, `_syncAdsLength`,
+   `prepareAdBreakStates`, `StatefulAdBreak`; telemetry hits become short `ADDIAG-DATA` windows (they show
+   whether e.g. `emptyAdBreakComplete` fired). Also logs the full patched `getAdMetadata` body once
+   (`ADK MASTER body (patched)`), so the return expression and the consumers can be read next time.
+4. `HH_DUMPS=false`: the household routing dumps (already captured in killlog5) no longer queue 2000 diagnostic jobs.
+
+**Eval hook finding (killlog7/8):** the String walk works but only for evals that pass a String: 22 of 776 evals
+located a source (MSL `headerdata` JSON, a 337KB `FX2Modules` bundle, a 231KB bootstrap), none with an anchor. The
+big modules come through `nrdp.gibbon.loadScript`, which sets `format="uint8array"`, so `eval` receives a
+**Uint8Array backing store, not a String**; the walk cannot see those. A hook that handles typed arrays (find the
+JSArrayBuffer backing pointer + byte length) is the next step if a pre-compile hook is still wanted; with the sweeps
+catching fresh copies it is no longer needed for household. Build Q ships with the hook off (repo default).
+
+## killlog9 (build Q): household fine, the main ad kill never landed (2026-10-11)
+
+Household timings are back to the last-good build (dispatcher +15.6s, HH flags +16.7s, route 2 +27.2s; MHU 16/16),
+no prompt. `fastADK` started at +27.6s (the "household landed" condition, no timeout) and only B landed (+32s).
+**No `PATCH ADK MASTER` line at all and `master=false` through +183s**: the `getAds(?);if(?){var ` pattern never
+matched, so Q's MASTER2 fix has not run on a device. The ADDIAG recon found `getAdMetadata`, `StatefulAdBreak`,
+`emptyAdBreakComplete`, `_syncAdsLength` and `prepareAdBreakStates` only inside method-name tables (compiled
+class data), never in source text, while in killlog8 the same text sat in a 4.6MB range. The user saw one ad at the
+start of the first episode, which matches Netflix's normal ad-tier pre-roll and cannot be credited to the kill.
+Full analysis, hypotheses and next steps: `docs/NETFLIX_HOUSEHOLD_ADKILL_2026-10_HANDOFF.md`.

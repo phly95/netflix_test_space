@@ -32,7 +32,13 @@ testing/
 │   ├── patch.sh           ← patch an APK/APKM with the local bundle
 │   ├── deploy.sh          ← install the patched APK on the TV + launch it
 │   ├── logs.sh            ← stream filtered logcat from the TV
-│   └── test.sh            ← build → patch → deploy → logs, all in one
+│   ├── test.sh            ← build → patch → deploy → logs, all in one
+│   ├── build-test-apk.sh  ← swap the bundled script in an already-patched APK, sign, split (NETFLIX_TEST_APK_BUILD.md)
+│   ├── apk-swap-file.py   ← replace one APK entry byte-identically, keep .so page alignment
+│   ├── apk-align-check.py ← verify stored .so alignment
+│   ├── java/              ← ApkSign (v2) + ApkInspect, built against apksig/bcprov by build-test-apk.sh
+│   ├── killlog-timeline.py← per-layer landing times from `adb logcat -s KILL:*` captures
+│   └── redact-killlog.py  ← strip locale/telemetry ids/ciphertext from a KILL capture before committing it
 ├── apks/                  ← (gitignored) drop your .apkm downloads here
 ├── out/                   ← (gitignored) merged + patched APKs, local bundle
 ├── tools/                 ← (gitignored) morphe-cli.jar, APKEditor.jar

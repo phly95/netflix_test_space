@@ -1,0 +1,119 @@
+--------- beginning of main
+10-11 11:00:50.625 E/KILL    ( 2462): killads ready (A/A2/ADV/DAI/MASTER ad-kill + B pause, single-shot; ad+resume monitor)
+10-11 11:00:50.625 E/KILL    ( 2462): OBS monitor off in household builds (4 synchronous full-heap scans per cycle starved the household patches)
+10-11 11:00:50.625 E/KILL    ( 2462): fastADK armed (async ad-kill: ADV2 + MASTER2 + B + DAI, rename-tolerant)
+10-11 11:00:50.625 E/KILL    ( 2462): fastHH armed (household prompt suppression, early race-win scanner)
+10-11 11:00:50.625 E/KILL    ( 2462): fastCLCS armed (gate dispatcher race-win)
+10-11 11:00:50.625 E/KILL    ( 2462): evalHook arming (household pre-compile source patch)
+10-11 11:00:50.625 E/KILL    ( 2462): HHDIAG armed (status every 5s + household routing JS dumps)
+10-11 11:00:50.748 E/KILL    ( 2462): RANGESTAT rw-ranges=595 >=32K:191(236MB) >=256K:79(224MB) >=1M:37(200MB) >=8M:9(136MB)
+10-11 11:00:53.626 E/KILL    ( 2462): HHSTATUS +3s clcs=false route2=false hh=false mhu=0/16 ads[adv=false master=false b=false dai=false] fcPass=2 hhPass=1 scans=2+1298/0/0 (household/ads/diag) eval=0/0src adk=held
+10-11 11:00:58.628 E/KILL    ( 2462): EVALHOOK armed @0xbd59126c (household edits applied to each evaluated source; defer=true nocache=0 noop=false)
+10-11 11:00:58.628 E/KILL    ( 2462): HHSTATUS +8s clcs=false route2=false hh=false mhu=0/16 ads[adv=false master=false b=false dai=false] fcPass=3 hhPass=2 scans=2+3123/0/0 (household/ads/diag) eval=0/0src adk=held
+10-11 11:00:59.090 E/KILL    ( 2462): EVALSRC#1 none located r0=0xba119000 r1=0xbb73b454 r2=0xbb73b484
+10-11 11:00:59.676 E/KILL    ( 2462): EVALSRC#2 none located r0=0xba119000 r1=0xbb73b454 r2=0xbb73b484
+10-11 11:00:59.771 E/KILL    ( 2462): EVALSRC#3 none located r0=0xba119000 r1=0xbb73b454 r2=0xbb73b484
+10-11 11:01:01.236 E/KILL    ( 2462): EVALSRC#4 none located r0=0xba119000 r1=0xbb73b234 r2=0xbb73b260
+10-11 11:01:01.338 E/KILL    ( 2462): EVALSRC#5 none located r0=0xba119000 r1=0xbb73b42c r2=0xbb73b458
+10-11 11:01:01.372 E/KILL    ( 2462): EVALSRC#6 none located r0=0xba119000 r1=0xbb73b42c r2=0xbb73b458
+10-11 11:01:01.951 E/KILL    ( 2462): EVALSRC#7 len=337512 head="globalThis[\"FX2Modules\"] = globalThis[\"FX2Module" +11325ms
+10-11 11:01:03.629 E/KILL    ( 2462): HHSTATUS +13s clcs=false route2=false hh=false mhu=0/16 ads[adv=false master=false b=false dai=false] fcPass=3 hhPass=2 scans=2+1351/0/2064 (household/ads/diag) eval=11/1src adk=held
+10-11 11:01:03.949 E/KILL    ( 2462): RANGEHIT MHU_ rangeSize=1961984 base=0xb8040000 +13324ms
+10-11 11:01:03.949 E/KILL    ( 2462): RANGEHIT MHU_ rangeSize=1961984 base=0xb8040000 +13324ms
+10-11 11:01:03.949 E/KILL    ( 2462): RANGEHIT MHU_ rangeSize=1961984 base=0xb8040000 +13324ms
+10-11 11:01:03.950 E/KILL    ( 2462): RANGEHIT MHU_ rangeSize=1961984 base=0xb8040000 +13325ms
+10-11 11:01:05.186 E/KILL    ( 2462): RANGEHIT case"clcsI rangeSize=1961984 base=0xb8040000 +14561ms
+10-11 11:01:05.626 E/KILL    ( 2462): ANCHOR MAP: A=0 A2=0 ADV=0 DAI=0 MASTER=0 B=0 FP=off GAID=off HH=0 pass=1
+10-11 11:01:06.980 E/KILL    ( 2462): EVALSRC#84 len=4519 head="{\"headerdata\":\"eyJjaXBoZXJ0ZXh0Ijoi<ciphertext-redacted>" +16355ms
+10-11 11:01:07.047 E/KILL    ( 2462): EVALSRC#87 len=4491 head="{\"headerdata\":\"eyJjaXBoZXJ0ZXh0Ijoi<ciphertext-redacted>" +16422ms
+10-11 11:01:07.103 E/KILL    ( 2462): EVALSRC#90 len=5887 head="{\"headerdata\":\"eyJjaXBoZXJ0ZXh0Ijoi<ciphertext-redacted>" +16478ms
+10-11 11:01:07.428 E/KILL    ( 2462): EVALSRC#107 len=4491 head="{\"headerdata\":\"eyJjaXBoZXJ0ZXh0Ijoi<ciphertext-redacted>" +16803ms
+10-11 11:01:08.148 E/KILL    ( 2462): PATCH CLCS(fast): gate case-labels broken x1 at +17523ms (pass 3)
+10-11 11:01:08.630 E/KILL    ( 2462): HHSTATUS +18s clcs=true route2=false hh=false mhu=0/16 ads[adv=false master=false b=false dai=false] fcPass=3 hhPass=3 scans=2+2816/0/2064 (household/ads/diag) eval=133/5src adk=held
+10-11 11:01:09.251 E/KILL    ( 2462): RANGEHIT setAccount rangeSize=262144 base=0x36d80000 +18626ms
+10-11 11:01:09.251 E/KILL    ( 2462): PATCH HH: flag:isActiveMisdetectionSession 0->1 @0x36db109f
+10-11 11:01:10.097 E/KILL    ( 2462): EVALSRC#135 len=337512 head="globalThis[\"FX2Modules\"] = globalThis[\"FX2Module" +19471ms
+10-11 11:01:10.122 E/KILL    ( 2462): EVALSRC#136 len=337512 head="globalThis[\"FX2Modules\"] = globalThis[\"FX2Module" +19497ms
+10-11 11:01:10.277 E/KILL    ( 2462): EVALSRC#140 len=231338 head="!function(){\"use strict\"\nclass e{#e\nconstructor(" +19652ms
+10-11 11:01:10.305 E/KILL    ( 2462): EVALSRC#141 len=231338 head="!function(){\"use strict\"\nclass e{#e\nconstructor(" +19680ms
+10-11 11:01:11.129 E/KILL    ( 2462): RANGEHIT setAccount rangeSize=262144 base=0x36d80000 +20504ms
+10-11 11:01:11.130 E/KILL    ( 2462): PATCH HH: flag:isNetflixHouseholdAvailable 0->1 @0x36db0d94
+10-11 11:01:11.131 E/KILL    ( 2462): RANGEHIT setAccount rangeSize=262144 base=0x36d80000 +20506ms
+10-11 11:01:11.132 E/KILL    ( 2462): PATCH HH: flag:isNetflixHouseholdAvailable 0->1 @0x36db1c07
+10-11 11:01:11.839 E/KILL    ( 2462): EVALSRC#155 len=19711 head="{\"headerdata\":\"eyJjaXBoZXJ0ZXh0Ijoi<ciphertext-redacted>" +21214ms
+10-11 11:01:12.626 E/KILL    ( 2462): RANGEHIT (y=null!=f rangeSize=262144 base=0x36d80000 +22001ms
+10-11 11:01:12.630 E/KILL    ( 2462): PATCH HH: render:misdetectionAvailable(y) f->0 @0x36daddc9
+10-11 11:01:13.135 E/KILL    ( 2462): EVALSRC#158 len=337512 head="globalThis[\"FX2Modules\"] = globalThis[\"FX2Module" +22510ms
+10-11 11:01:13.631 E/KILL    ( 2462): HHSTATUS +23s clcs=true route2=false hh=false mhu=0/16 ads[adv=false master=false b=false dai=false] fcPass=4 hhPass=3 scans=2+2296/0/2064 (household/ads/diag) eval=162/11src adk=held
+10-11 11:01:14.121 E/KILL    ( 2462): RANGEHIT w=null!=h& rangeSize=262144 base=0x36d80000 +23496ms
+10-11 11:01:14.122 E/KILL    ( 2462): PATCH HH: render:netflixHouseholdAvailable(w) h->0 @0x36daddd6
+10-11 11:01:17.204 E/KILL    ( 2462): fastHH: all HH anchors flipped by pass 3 at +26579ms
+10-11 11:01:18.632 E/KILL    ( 2462): HHSTATUS +28s clcs=true route2=false hh=true mhu=0/16 ads[adv=false master=false b=false dai=false] fcPass=4 hhPass=4 scans=2+2476/0/2064 (household/ads/diag) eval=170/11src adk=held
+10-11 11:01:20.367 E/KILL    ( 2462): RANGEHIT doRouteOnF rangeSize=577536 base=0x511c0000 +29742ms
+10-11 11:01:20.368 E/KILL    ( 2462): DIAG route2 anchor RESIDENT @0x51243487 next="v){p.next=24\nbreak}if(\"c" at +29743ms
+10-11 11:01:20.368 E/KILL    ( 2462): PATCH CLCS(route2): doRouteOnFetchedInterstitial !v->!0 (playback interstitial -> exit) @0x51243487
+10-11 11:01:20.647 E/KILL    ( 2462): fastADK: starting at +30022ms (household landed=false clcs=true hh=true route2=false mhu=0)
+10-11 11:01:20.861 E/KILL    ( 2462): PATCH CLCS(route2): wrote x1 at +30236ms (pass 4)
+10-11 11:01:22.003 E/KILL    ( 2462): RANGEHIT .manifest. rangeSize=4833280 base=0x5ab80000 +31378ms
+10-11 11:01:22.004 E/KILL    ( 2462): PATCH ADK ADV: adverts.adBreaks source r.manifest.adverts.adBreaks->[] (empty all ad breaks) @0x5ae355b7 now="ull==(h=[]                         )?void 0:h.map(function(e,t){var"
+10-11 11:01:22.408 E/KILL    ( 2462): EVALSRC#190 len=323961 head="{\"headerdata\":\"eyJjaXBoZXJ0ZXh0Ijoi<ciphertext-redacted>" +31783ms
+10-11 11:01:23.633 E/KILL    ( 2462): HHSTATUS +33s clcs=true route2=true hh=true mhu=0/16 ads[adv=true master=false b=false dai=false] fcPass=5 hhPass=4 scans=2+2629/2472/2064 (household/ads/diag) eval=222/12src adk=on
+10-11 11:01:25.648 E/KILL    ( 2462): ANCHOR MAP: A=0 A2=0 ADV=1 DAI=0 MASTER=0 B=0 FP=off GAID=off HH=1 pass=2
+10-11 11:01:25.921 E/KILL    ( 2462): RANGEHIT getAds(?); rangeSize=4833280 base=0x5ab80000 +35296ms
+10-11 11:01:25.938 E/KILL    ( 2462): PATCH ADK MASTER: else-branch e.adverts.adBreaks.map -> [].map @0x5af4ee7b
+10-11 11:01:25.938 E/KILL    ( 2462): PATCH ADK MASTER: getAdMetadata if(t)->if(0) @0x5af4ecb9 verify=OK
+10-11 11:01:25.982 E/KILL    ( 2462): EVALSRC#232 len=9247 head="{\"headerdata\":\"eyJjaXBoZXJ0ZXh0Ijoi<ciphertext-redacted>" +35357ms
+10-11 11:01:28.634 E/KILL    ( 2462): HHSTATUS +38s clcs=true route2=true hh=true mhu=0/16 ads[adv=true master=true b=false dai=false] fcPass=5 hhPass=4 scans=2+1409/1321/2064 (household/ads/diag) eval=256/13src adk=on
+10-11 11:01:29.791 E/KILL    ( 2462): EVALSRC#265 len=4491 head="{\"headerdata\":\"eyJjaXBoZXJ0ZXh0Ijoi<ciphertext-redacted>" +39166ms
+10-11 11:01:30.888 E/KILL    ( 2462): RANGEHIT void 0:e.d rangeSize=577536 base=0x511c0000 +40263ms
+10-11 11:01:30.889 E/KILL    ( 2462): PATCH ADK B: pause z() displayAd->void0 @0x5122aa85
+10-11 11:01:31.632 E/KILL    ( 2462): RANGEHIT case"clcsI rangeSize=49152 base=0xd8e45000 +41007ms
+10-11 11:01:31.632 E/KILL    ( 2462): RANGEHIT case"clcsI rangeSize=49152 base=0xd8e45000 +41007ms
+10-11 11:01:31.633 E/KILL    ( 2462): RANGEHIT case"clcsI rangeSize=49152 base=0xd8e45000 +41008ms
+10-11 11:01:33.634 E/KILL    ( 2462): RANGEHIT doRouteOnF rangeSize=577536 base=0x511c0000 +43009ms
+10-11 11:01:33.637 E/KILL    ( 2462): HHSTATUS +43s clcs=true route2=true hh=true mhu=0/16 ads[adv=true master=true b=true dai=false] fcPass=5 hhPass=5 scans=2+2014/416/2064 (household/ads/diag) eval=277/14src adk=on
+10-11 11:01:34.213 E/KILL    ( 2462): PATCH CLCS(fast): gate case-labels broken x51 at +43587ms (pass 5)
+10-11 11:01:38.638 E/KILL    ( 2462): HHSTATUS +48s clcs=true route2=true hh=true mhu=0/16 ads[adv=true master=true b=true dai=false] fcPass=6 hhPass=6 scans=2+2194/0/2064 (household/ads/diag) eval=278/14src adk=on
+10-11 11:01:39.702 E/KILL    ( 2462): RANGEHIT doRouteOnF rangeSize=577536 base=0x511c0000 +49077ms
+10-11 11:01:43.638 E/KILL    ( 2462): HHSTATUS +53s clcs=true route2=true hh=true mhu=0/16 ads[adv=true master=true b=true dai=false] fcPass=7 hhPass=6 scans=2+1363/2007/2064 (household/ads/diag) eval=279/14src adk=on
+10-11 11:01:45.650 E/KILL    ( 2462): ANCHOR MAP: A=0 A2=0 ADV=1 DAI=0 MASTER=1 B=1 FP=off GAID=off HH=1 pass=3
+10-11 11:01:46.502 E/KILL    ( 2462): RANGEHIT getAds(?); rangeSize=4833280 base=0x5ab80000 +55877ms
+10-11 11:01:47.055 E/KILL    ( 2462): EVALSRC#296 len=19711 head="{\"headerdata\":\"eyJjaXBoZXJ0ZXh0Ijoi<ciphertext-redacted>" +56430ms
+10-11 11:01:47.223 E/KILL    ( 2462): EVALSRC#303 len=159569 head="{\"headerdata\":\"eyJjaXBoZXJ0ZXh0Ijoi<ciphertext-redacted>" +56598ms
+10-11 11:01:48.655 E/KILL    ( 2462): HHSTATUS +58s clcs=true route2=true hh=true mhu=0/16 ads[adv=true master=true b=true dai=false] fcPass=7 hhPass=7 scans=2+1927/808/2064 (household/ads/diag) eval=332/16src adk=on
+10-11 11:01:48.803 E/KILL    ( 2462): EVALSRC#335 len=9247 head="{\"headerdata\":\"eyJjaXBoZXJ0ZXh0Ijoi<ciphertext-redacted>" +58178ms
+10-11 11:01:49.226 E/KILL    ( 2462): RANGEHIT doRouteOnF rangeSize=577536 base=0x511c0000 +58601ms
+10-11 11:01:49.639 E/KILL    ( 2462): EVALSRC#344 len=321857 head="{\"headerdata\":\"eyJjaXBoZXJ0ZXh0Ijoi<ciphertext-redacted>" +59014ms
+10-11 11:01:52.145 E/KILL    ( 2462): EVALSRC#386 len=9247 head="{\"headerdata\":\"eyJjaXBoZXJ0ZXh0Ijoi<ciphertext-redacted>" +61519ms
+10-11 11:01:53.657 E/KILL    ( 2462): HHSTATUS +63s clcs=true route2=true hh=true mhu=0/16 ads[adv=true master=true b=true dai=false] fcPass=8 hhPass=7 scans=2+2045/0/2064 (household/ads/diag) eval=407/19src adk=on
+10-11 11:01:54.651 E/KILL    ( 2462): EVALSRC#418 len=4491 head="{\"headerdata\":\"eyJjaXBoZXJ0ZXh0Ijoi<ciphertext-redacted>" +64026ms
+10-11 11:01:58.658 E/KILL    ( 2462): HHSTATUS +68s clcs=true route2=true hh=true mhu=0/16 ads[adv=true master=true b=true dai=false] fcPass=8 hhPass=8 scans=2+1353/0/2064 (household/ads/diag) eval=430/20src adk=on
+10-11 11:02:03.659 E/KILL    ( 2462): HHSTATUS +73s clcs=true route2=true hh=true mhu=0/16 ads[adv=true master=true b=true dai=false] fcPass=9 hhPass=9 scans=2+2744/683/2064 (household/ads/diag) eval=437/20src adk=on
+10-11 11:02:04.880 E/KILL    ( 2462): RANGEHIT getAds(?); rangeSize=4833280 base=0x5ab80000 +74255ms
+10-11 11:02:05.685 E/KILL    ( 2462): ANCHOR MAP: A=0 A2=0 ADV=1 DAI=0 MASTER=1 B=1 FP=off GAID=off HH=1 pass=4
+10-11 11:02:08.668 E/KILL    ( 2462): HHSTATUS +78s clcs=true route2=true hh=true mhu=0/16 ads[adv=true master=true b=true dai=false] fcPass=9 hhPass=9 scans=2+2085/387/2064 (household/ads/diag) eval=640/20src adk=on
+10-11 11:02:13.678 E/KILL    ( 2462): HHSTATUS +83s clcs=true route2=true hh=true mhu=0/16 ads[adv=true master=true b=true dai=false] fcPass=10 hhPass=9 scans=2+1957/0/2064 (household/ads/diag) eval=690/20src adk=on
+10-11 11:02:16.342 E/KILL    ( 2462): EVALSRC#697 len=24319 head="{\"headerdata\":\"eyJjaXBoZXJ0ZXh0Ijoi<ciphertext-redacted>" +85717ms
+10-11 11:02:17.213 E/KILL    ( 2462): EVALSRC#712 len=38175 head="{\"headerdata\":\"eyJjaXBoZXJ0ZXh0Ijoi<ciphertext-redacted>" +86588ms
+10-11 11:02:18.680 E/KILL    ( 2462): HHSTATUS +88s clcs=true route2=true hh=true mhu=0/16 ads[adv=true master=true b=true dai=false] fcPass=10 hhPass=10 scans=2+1368/2063/2064 (household/ads/diag) eval=720/22src adk=on
+10-11 11:02:22.586 E/KILL    ( 2462): RANGEHIT getAds(?); rangeSize=4833280 base=0x5ab80000 +91961ms
+10-11 11:02:23.685 E/KILL    ( 2462): HHSTATUS +93s clcs=true route2=true hh=true mhu=0/16 ads[adv=true master=true b=true dai=false] fcPass=11 hhPass=10 scans=2+1972/1247/2064 (household/ads/diag) eval=746/22src adk=on
+10-11 11:02:25.686 E/KILL    ( 2462): ANCHOR MAP: A=0 A2=0 ADV=1 DAI=0 MASTER=1 B=1 FP=off GAID=off HH=1 pass=5
+10-11 11:02:28.687 E/KILL    ( 2462): HHSTATUS +98s clcs=true route2=true hh=true mhu=0/16 ads[adv=true master=true b=true dai=false] fcPass=11 hhPass=11 scans=2+1726/0/2064 (household/ads/diag) eval=746/22src adk=on
+10-11 11:02:33.688 E/KILL    ( 2462): HHSTATUS +103s clcs=true route2=true hh=true mhu=0/16 ads[adv=true master=true b=true dai=false] fcPass=12 hhPass=12 scans=2+2066/0/2064 (household/ads/diag) eval=746/22src adk=on
+10-11 11:02:38.691 E/KILL    ( 2462): HHSTATUS +108s clcs=true route2=true hh=true mhu=0/16 ads[adv=true master=true b=true dai=false] fcPass=13 hhPass=12 scans=2+1897/675/2064 (household/ads/diag) eval=756/22src adk=on
+10-11 11:02:43.692 E/KILL    ( 2462): HHSTATUS +113s clcs=true route2=true hh=true mhu=0/16 ads[adv=true master=true b=true dai=false] fcPass=13 hhPass=13 scans=2+1337/0/2064 (household/ads/diag) eval=760/22src adk=on
+10-11 11:02:45.688 E/KILL    ( 2462): ANCHOR MAP: A=0 A2=0 ADV=1 DAI=0 MASTER=1 B=1 FP=off GAID=off HH=1 pass=6
+10-11 11:02:48.693 E/KILL    ( 2462): HHSTATUS +118s clcs=true route2=true hh=true mhu=0/16 ads[adv=true master=true b=true dai=false] fcPass=14 hhPass=14 scans=2+1799/0/2064 (household/ads/diag) eval=760/22src adk=on
+10-11 11:02:53.696 E/KILL    ( 2462): HHSTATUS +123s clcs=true route2=true hh=true mhu=0/16 ads[adv=true master=true b=true dai=false] fcPass=15 hhPass=14 scans=2+1838/621/2064 (household/ads/diag) eval=761/22src adk=on
+10-11 11:02:58.699 E/KILL    ( 2462): HHSTATUS +128s clcs=true route2=true hh=true mhu=0/16 ads[adv=true master=true b=true dai=false] fcPass=15 hhPass=15 scans=2+1075/0/2064 (household/ads/diag) eval=761/22src adk=on
+10-11 11:03:03.700 E/KILL    ( 2462): HHSTATUS +133s clcs=true route2=true hh=true mhu=0/16 ads[adv=true master=true b=true dai=false] fcPass=16 hhPass=16 scans=2+1355/1349/2064 (household/ads/diag) eval=761/22src adk=on
+10-11 11:03:05.688 E/KILL    ( 2462): ANCHOR MAP: A=0 A2=0 ADV=1 DAI=0 MASTER=1 B=1 FP=off GAID=off HH=1 pass=7
+10-11 11:03:08.701 E/KILL    ( 2462): HHSTATUS +138s clcs=true route2=true hh=true mhu=0/16 ads[adv=true master=true b=true dai=false] fcPass=17 hhPass=16 scans=2+1552/0/2064 (household/ads/diag) eval=761/22src adk=on
+10-11 11:03:13.702 E/KILL    ( 2462): HHSTATUS +143s clcs=true route2=true hh=true mhu=0/16 ads[adv=true master=true b=true dai=false] fcPass=17 hhPass=17 scans=2+665/0/2064 (household/ads/diag) eval=775/22src adk=on
+10-11 11:03:18.704 E/KILL    ( 2462): HHSTATUS +148s clcs=true route2=true hh=true mhu=0/16 ads[adv=true master=true b=true dai=false] fcPass=18 hhPass=18 scans=2+1198/1608/2064 (household/ads/diag) eval=775/22src adk=on
+10-11 11:03:23.705 E/KILL    ( 2462): HHSTATUS +153s clcs=true route2=true hh=true mhu=0/16 ads[adv=true master=true b=true dai=false] fcPass=19 hhPass=18 scans=2+1193/507/2064 (household/ads/diag) eval=775/22src adk=on
+10-11 11:03:25.691 E/KILL    ( 2462): ANCHOR MAP: A=0 A2=0 ADV=1 DAI=0 MASTER=1 B=1 FP=off GAID=off HH=1 pass=8
+10-11 11:03:28.708 E/KILL    ( 2462): HHSTATUS +158s clcs=true route2=true hh=true mhu=0/16 ads[adv=true master=true b=true dai=false] fcPass=19 hhPass=19 scans=2+590/0/2064 (household/ads/diag) eval=775/22src adk=on
+10-11 11:03:33.709 E/KILL    ( 2462): HHSTATUS +163s clcs=true route2=true hh=true mhu=0/16 ads[adv=true master=true b=true dai=false] fcPass=20 hhPass=20 scans=2+1131/1195/2064 (household/ads/diag) eval=775/22src adk=on
+10-11 11:03:38.710 E/KILL    ( 2462): HHSTATUS +168s clcs=true route2=true hh=true mhu=0/16 ads[adv=true master=true b=true dai=false] fcPass=21 hhPass=21 scans=2+2263/0/2064 (household/ads/diag) eval=776/22src adk=on

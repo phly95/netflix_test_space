@@ -37,20 +37,44 @@ var ADK_HH_PERIOD=120000;
 //  - household jobs have priority over the low-priority diagnostics (two queues);
 //  - ranges under AS_MIN_RANGE are skipped (thousands of tiny thread-stack/arena mappings; the device
 //    has ~550 rw- ranges, JS source lives in the big heap ranges).
-var AS_MAX=2, AS_MIN_RANGE=32768, _asRun=0, _asQ=[[],[],[]];   // priority 0 = eval-hook sources, 1 = sweeps, 2 = diagnostics
-function hhBusy(){ return _asRun+_asQ[0].length+_asQ[1].length+_asQ[2].length>0; }
+// Queues (2026-10, after killlog5-7): 0 = eval-hook sources, 1 = household sweeps, 2 = ad-kill sweeps,
+// 3 = diagnostics. killlog6/7 (fastADK added) showed the household layers landing ~10s later than the
+// household-only build (killlog5): the ad-kill sweeps (4 per cycle, 191 range jobs each) sat ahead of the household
+// pass in the single FIFO queue. Now (a) fastADK is held until household has landed (adkHold, below), and
+// (b) once both families are queued they SHARE the pool: whichever family has fewer scans running goes next,
+// so neither can starve the other (strict household priority starved the ad-kill in steady state: the
+// persistent household detectors alone use nearly the whole pool).
+var AS_MAX=2, AS_MIN_RANGE=32768, _asRun=0, _asRunP=[0,0,0,0], _asQ=[[],[],[],[]];
+function hhBusy(){ return _asRun+_asQ[0].length+_asQ[1].length+_asQ[2].length+_asQ[3].length>0; }
 function adkDefer(){ return HH_ENABLED && ((Date.now()-_fcT0)<60000 || hhBusy()); }
-function aScanPump(){ while(_asRun<AS_MAX){ var q=_asQ[0].length?_asQ[0]:(_asQ[1].length?_asQ[1]:(_asQ[2].length?_asQ[2]:null)); if(!q) return; var job=q.shift(); _asRun++; job(); } }
+function aScanPick(){ if(_asQ[0].length) return 0;
+  var h=_asQ[1].length>0, a=_asQ[2].length>0;
+  if(h&&a) return (_asRunP[2]<_asRunP[1])?2:1;
+  if(h) return 1; if(a) return 2; if(_asQ[3].length) return 3; return -1; }
+function aScanPump(){ while(_asRun<AS_MAX){ var p=aScanPick(); if(p<0) return; var job=_asQ[p].shift(); _asRun++; _asRunP[p]++; job(p); } }
+// Diagnostics: which range sizes actually hold the anchors (to pick AS_MIN_RANGE from data, not a guess).
+var _rhN=0, _rhBy={};
+function rangeHit(r,patStr){ if(_rhN>=48) return; var key=patStr.slice(0,29), c=_rhBy[key]||0; if(c>=4) return; _rhBy[key]=c+1; _rhN++;
+  var t=patStr.split(' '), lbl=''; for(var i=0;i<t.length&&i<10;i++) lbl+=(t[i]==='??'?'?':String.fromCharCode(parseInt(t[i],16)));
+  L('RANGEHIT '+lbl+' rangeSize='+r.size+' base='+r.base+' +'+(Date.now()-_fcT0)+'ms'); }
 function aScanRange(r,patStr,onMatch,done,prio){
-  _asQ[prio===true?2:(prio==null||prio===false?1:prio)].push(function(){ var fin=false;
-    function end(){ if(fin) return; fin=true; _asRun--; try{ done(); }catch(e){ L('aScan done ERR '+e); } aScanPump(); }
-    try{ Memory.scan(r.base,r.size,patStr,{ onMatch:function(a,sz){ try{ onMatch(a,sz); }catch(e){ L('aScan match ERR '+e); } }, onError:function(){ end(); }, onComplete:end }); }
+  var pq=(prio===true?3:(prio==null||prio===false?1:prio));
+  _asQ[pq].push(function(p){ var fin=false;
+    function end(){ if(fin) return; fin=true; _asRun--; _asRunP[p]--; try{ done(); }catch(e){ L('aScan done ERR '+e); } aScanPump(); }
+    try{ Memory.scan(r.base,r.size,patStr,{ onMatch:function(a,sz){ if(pq!==0){ try{ rangeHit(r,patStr); }catch(e){} } try{ onMatch(a,sz); }catch(e){ L('aScan match ERR '+e); } }, onError:function(){ end(); }, onComplete:end }); }
     catch(e){ end(); } });
   aScanPump(); }
+// Biggest ranges first: JS source strings are multi-MB allocations, so a first hit comes earlier.
 function aScanAll(rs,patStr,onMatch,done,prio){ var list=[];
   for(var i=0;i<rs.length;i++) if(rs[i].size>=AS_MIN_RANGE&&rs[i].size<=128*1024*1024) list.push(rs[i]);
+  list.sort(function(x,y){ return y.size-x.size; });
   var left=list.length; if(!left){ done(); return; }
   for(var k=0;k<list.length;k++) aScanRange(list[k],patStr,onMatch,function(){ if(--left===0) done(); },prio); }
+var _rsLogged=false;
+function logRangeStats(rs){ if(_rsLogged) return; _rsLogged=true;
+  var n=[0,0,0,0], by=[0,0,0,0], th=[32768,262144,1048576,8388608];
+  for(var i=0;i<rs.length;i++){ var s=rs[i].size; if(s>128*1024*1024) continue; for(var k=0;k<th.length;k++) if(s>=th[k]){ n[k]++; by[k]+=s; } }
+  L('RANGESTAT rw-ranges='+rs.length+' >=32K:'+n[0]+'('+Math.round(by[0]/1048576)+'MB) >=256K:'+n[1]+'('+Math.round(by[1]/1048576)+'MB) >=1M:'+n[2]+'('+Math.round(by[2]/1048576)+'MB) >=8M:'+n[3]+'('+Math.round(by[3]/1048576)+'MB)'); }
 function runSteps(steps,done,gated){ var i=0;
   (function next(){ if(i>=steps.length){ if(done) done(); return; }
     if(gated&&adkDefer()){ setTimeout(next,300); return; }   // ad-kill steps only run while no household scan is pending
@@ -529,6 +553,7 @@ function route2At(a){ var t2=a.add(FR_ANCHOR.length);       // 1 = wrote, 0 = al
 function fastCLCS(){ if(!HH_ENABLED)return; _fcN++;
   var rs=null; try{ rs=Process.enumerateRanges('rw-'); }catch(e){}
   if(!rs){ setTimeout(fastCLCS,2000); return; }
+  logRangeStats(rs);
   var hit=0, wrote=0, hit2=0, wrote2=0, left=2;
   function fin(){ if(--left>0) return;
     if(hit&&!clcsDone) clcsMarkDone();
@@ -549,11 +574,12 @@ function fastCLCS(){ if(!HH_ENABLED)return; _fcN++;
 //    precisely. Same sliced scan style as fastCLCS; each marker dumped at most HHD_MAX times, only where
 //    the surrounding text looks like JS source (not network/telemetry buffers).
 var HH_DIAG=true;
+var HH_DUMPS=false;   // household routing JS dumps (already captured in killlog5; they only queued 2000 jobs behind the sweeps)
 var HHD_MARKERS=['pushClcsInterstitialGate','doRouteOnFetchedInterstitial','lcsInterstitialPreProfileGate','isNetflixHouseholdAvailable'];
 var HHD_BEFORE=360, HHD_AFTER=840, HHD_MAX=5;
 var hhdSeen={}, hhdCount={}, _hhdN=0, _hhdDone=false;
 function hhStatus(){ if(!HH_DIAG) return;
-  L('HHSTATUS +'+Math.round((Date.now()-_fcT0)/1000)+'s clcs='+clcsDone+' route2='+frDone+' hh='+hhDone+' mhu='+mhuHits+'/'+MHU_PATS.length+' ads[adv='+advDone+' master='+masterDone+' b='+bDone+' dai='+daiDone+'] fcPass='+_fcN+' hhPass='+_fastHHn+' scans='+_asRun+'+'+_asQ[1].length+'/'+_asQ[2].length+' eval='+_evalN);
+  L('HHSTATUS +'+Math.round((Date.now()-_fcT0)/1000)+'s clcs='+clcsDone+' route2='+frDone+' hh='+hhDone+' mhu='+mhuHits+'/'+MHU_PATS.length+' ads[adv='+advDone+' master='+masterDone+' b='+bDone+' dai='+daiDone+'] fcPass='+_fcN+' hhPass='+_fastHHn+' scans='+_asRun+'+'+_asQ[1].length+'/'+_asQ[2].length+'/'+_asQ[3].length+' (household/ads/diag) eval='+_evalN+'/'+_evalSrcCalls+'src adk='+(_adkStarted?'on':(adkHold()?'held':'idle')));
   if(Date.now()-_fcT0<300000) setTimeout(hhStatus,5000); }
 function looksLikeJs(c){ var n=0; for(var i=0;i<c.length&&n<8;i++){ var ch=c.charCodeAt(i); if(ch===59||ch===123||ch===125||ch===40) n++; } return n>=8; }
 function hhDiag(){ if(!HH_DIAG||_hhdDone) return; _hhdN++;
@@ -584,16 +610,20 @@ function hhDiag(){ if(!HH_DIAG||_hhdDone) return; _hhdN++;
 // Same two kills as before, re-expressed; each is verify-before-write, length-preserving, rename-tolerant
 // (locals are matched by regex, not hardcoded) and runs on the async pool, persistently, so a re-evaluated
 // (fresh, unpatched) copy is caught too:
-//  ADV2   adverts.adBreaks source:  h=r.manifest.adverts.adBreaks  ->  h=[]<spaces>   (every ad break list is empty)
-//  MASTER2 getAdMetadata: `if(t){`->`if(0){` (skip the legacy getAds branch) AND the else branch's
-//         `i=e.adverts.adBreaks.map(`->`i=[]<spaces>.map(` so it yields a VALID empty array (never the v1
-//         undefined crash); the no-adverts `return;` is the original ad-free path. M2 is written first: alone it
-//         is harmless, M1 alone is not.
+//  ADV2   adverts.adBreaks source:  h=r.manifest.adverts.adBreaks  ->  h=[]<spaces>   (OPT-IN, ADK_ADV_ENABLED)
+//  MASTER2 getAdMetadata: `if(t){`->`if(0){` (skip the legacy getAds branch), the else branch's early
+//         `return;` -> a no-op and its `i=e.adverts.adBreaks.map(` -> `i=[]<spaces>.map(`, so EVERY title yields
+//         a VALID empty array (the documented device-verified M1+M2 shape: `else b=[]`). killlog8: the first
+//         version kept the `if(!e.adverts||!e.adverts.adBreaks.length)return;` guard, and with ADV2 applied
+//         adBreaks.length is always 0, so getAdMetadata returned UNDEFINED for every title (the half-emptied
+//         state the design notes forbid) and ads still played. Order: map source, guard, then M1 last.
 //  B, DAI exact anchors still match on 13.0.1 (B landed in earlier logs) and are kept.
+var ADK_ADV_ENABLED=false;   // ADV empties the manifest-level adBreaks (breaks removed, not just ads); the proven
+                             // config killed ads with MASTER alone and left the normaliser intact. Opt in to re-test.
 var ADK_ADV_ANCH='.manifest.adverts.adBreaks)?void 0:', ADK_ADV_SRC='.manifest.adverts.adBreaks';
 var ADK_M1_PAT=pat('getAds(')+' ?? '+pat(');if(')+' ?? '+pat('){var ');
-var ADK_M2_RE=/else\{if\(!([A-Za-z_$][\w$]*)\.adverts\|\|!\1\.adverts\.adBreaks\.length\)return;([A-Za-z_$][\w$]*)=\1\.adverts\.adBreaks\.map\(function\(/;
-var ADK_M2_DONE_RE=/else\{if\(!([A-Za-z_$][\w$]*)\.adverts\|\|!\1\.adverts\.adBreaks\.length\)return;([A-Za-z_$][\w$]*)=\[\] +\.map\(function\(/;
+// groups: 1 local, 2 guard ('return;' original | 6 spaces+';' neutralised), 3 accumulator, 4 map source (original | '[]'+spaces)
+var ADK_M2_RE=/else\{if\(!([A-Za-z_$][\w$]*)\.adverts\|\|!\1\.adverts\.adBreaks\.length\)(return;| {6};)([A-Za-z_$][\w$]*)=(\1\.adverts\.adBreaks|\[\] *)\.map\(function\(/;
 var _adkN=0, _adkLogged={};
 function adkPad(txt,len){ while(txt.length<len) txt+=' '; return txt; }
 // Per-match handlers (return 1 if they wrote). Shared by the async heap loop below and by the eval hook
@@ -606,39 +636,97 @@ function adkAdvAt(a){
   Memory.protect(t,len,'rw-'); t.writeByteArray(bytesOf(adkPad('[]',len))); advDone=true;
   L('PATCH ADK ADV: adverts.adBreaks source '+m[2]+ADK_ADV_SRC+'->[] (empty all ad breaks) @'+t+' now='+JSON.stringify(t.sub(8).readCString(len+40)));
   return 1; }
+var _adkBodyLogged=false;
 function adkMasterAt(a){
   var ctx=null; try{ ctx=a.readCString(1100); }catch(e){ return 0; }
-  var m1=/^getAds\(([A-Za-z_$][\w$]*)\);if\(([A-Za-z_$])\)\{var /.exec(ctx); if(!m1) return 0;
-  var m2=ADK_M2_RE.exec(ctx), m2b=m2?null:ADK_M2_DONE_RE.exec(ctx);
-  if(!m2&&!m2b){ if(!_adkLogged.m2){ _adkLogged.m2=true; L('ADK master: getAdMetadata else-branch shape UNEXPECTED, no write: '+JSON.stringify(ctx.slice(0,700))); } return 0; }
-  if(m2){ var xl=m2[1].length, tail=xl+'.adverts.adBreaks.map(function('.length, idx=m2.index+m2[0].length-tail, tlen=xl+'.adverts.adBreaks'.length;
-    if(ctx.substr(idx,tlen)!==m2[1]+'.adverts.adBreaks') return 0;
-    var t2=a.add(idx); Memory.protect(t2,tlen,'rw-'); t2.writeByteArray(bytesOf(adkPad('[]',tlen)));
-    L('PATCH ADK MASTER: else-branch '+m2[1]+'.adverts.adBreaks.map -> [].map @'+t2); }
-  var t1=a.add(13); Memory.protect(t1,1,'rw-'); t1.writeByteArray([0x30]);
-  var vb=-1; try{ vb=t1.readU8(); }catch(e){}
+  var m1=/^getAds\(([A-Za-z_$][\w$]*)\);if\(([A-Za-z_$]|0)\)\{var /.exec(ctx); if(!m1) return 0;
+  var m2=ADK_M2_RE.exec(ctx);
+  if(!m2){ if(!_adkLogged.m2){ _adkLogged.m2=true; L('ADK master: getAdMetadata else-branch shape UNEXPECTED, no write: '+JSON.stringify(ctx.slice(0,700))); } return 0; }
+  var X=m2[1], G=m2[2], Y=m2[3], S=m2[4];
+  var gIdx=m2.index+('else{if(!'+X+'.adverts||!'+X+'.adverts.adBreaks.length)').length, sIdx=gIdx+G.length+Y.length+1, wrote=0;
+  if(S.charAt(0)!=='['){                                   // 1) map source -> [] (alone it is harmless)
+    var t2=a.add(sIdx), tl=S.length; if(ctx.substr(sIdx,tl)!==S) return 0;
+    Memory.protect(t2,tl,'rw-'); t2.writeByteArray(bytesOf(adkPad('[]',tl))); wrote++;
+    L('PATCH ADK MASTER: else-branch '+S+'.map -> [].map @'+t2); }
+  if(G==='return;'){                                       // 2) the early return would give undefined -> no-op
+    var tg=a.add(gIdx); if(ctx.substr(gIdx,7)!=='return;') return 0;
+    Memory.protect(tg,7,'rw-'); tg.writeByteArray(bytesOf('      ;')); wrote++;
+    L('PATCH ADK MASTER: else-branch early return -> no-op (getAdMetadata yields [] for every title, never undefined) @'+tg); }
+  if(m1[2]!=='0'){                                         // 3) M1 last: skip the legacy getAds branch
+    var t1=a.add(13); Memory.protect(t1,1,'rw-'); t1.writeByteArray([0x30]); wrote++;
+    var vb=-1; try{ vb=t1.readU8(); }catch(e){}
+    L('PATCH ADK MASTER: getAdMetadata if('+m1[2]+')->if(0) @'+t1+' verify='+(vb===0x30?'OK':'FAIL('+vb+')')); }
   masterDone=true; m1Done=true; m2Done=true;
-  L('PATCH ADK MASTER: getAdMetadata if('+m1[2]+')->if(0) @'+t1+' verify='+(vb===0x30?'OK':'FAIL('+vb+')'));
-  return 1; }
+  if(wrote&&!_adkBodyLogged){ _adkBodyLogged=true; try{ L('ADK MASTER body (patched) @'+a+' '+JSON.stringify(a.readCString(2300))); }catch(e){} }   // recon: the full return expression
+  return wrote?1:0; }
 function adkBAt(a){ var t=a.add(7), cur=null; try{ cur=t.readCString(B_OLD.length); }catch(e){}
   if(cur!==B_OLD) return 0; Memory.protect(t,B_NEW.length,'rw-'); t.writeByteArray(bytesOf(B_NEW)); bDone=true;
   L('PATCH ADK B: pause z() displayAd->void0 @'+t); return 1; }
 function adkDaiAt(a){ var t=a.add(DAI_OFF), cur=null; try{ cur=t.readCString(1); }catch(e){}
   if(cur!==DAI_EXP) return 0; Memory.protect(t,1,'rw-'); t.writeByteArray([0x3d]); daiDone=true;
   L('PATCH ADK DAI: applyDaiPrefetch 0!==->0=== @'+t); return 1; }
-function adkAdv(rs,done){ aScanAll(rs,pat(ADK_ADV_ANCH),adkAdvAt,done); }
-function adkMaster(rs,done){ aScanAll(rs,ADK_M1_PAT,adkMasterAt,done); }
-function adkB(rs,done){ aScanAll(rs,pat(B_ANCHOR),adkBAt,done); }
-function adkDai(rs,done){ aScanAll(rs,pat(DAI_ANCHOR),adkDaiAt,done); }
-// Persistent loop. Until the kills have landed once: every anchor each cycle, quickly. Afterwards a cheap
-// detector for fresh (re-evaluated, unpatched) copies: the two main anchors every 5s, B/DAI every 4th cycle.
-function fastADK(){ if(!HH_ENABLED) return; _adkN++;
+// Ad-kill scans run on queue 2 (below household, sharing the pool with it; see the pool comment at the top).
+function adkAdv(rs,done){ aScanAll(rs,pat(ADK_ADV_ANCH),adkAdvAt,done,2); }
+function adkMaster(rs,done){ aScanAll(rs,ADK_M1_PAT,adkMasterAt,done,2); }
+function adkB(rs,done){ aScanAll(rs,pat(B_ANCHOR),adkBAt,done,2); }
+function adkDai(rs,done){ aScanAll(rs,pat(DAI_ANCHOR),adkDaiAt,done,2); }
+// HOLD: killlog6/7 showed fastADK (armed at +300ms) delaying every household layer by ~10s, which pushed the
+// household prompt past the profile select. The ad modules are not needed until a title plays, so wait until
+// the household layers have FIRST landed (dispatcher labels, HH flags, route 2), then start.
+// ADK_HH_WAIT_MS is only a safety net so a drifted household anchor cannot keep the ad-kill off for good.
+var ADK_HH_WAIT_MS=30000, ADK_LIGHT_MS=8000, _adkStarted=false;
+// MHU is NOT required: it is the blank-screen fallback layer, and killlog8 ran the whole session at mhu=0/16 with no prompt.
+function hhLanded(){ return clcsDone && hhDone && frDone; }
+function adkHold(){ return HH_ENABLED && !hhLanded() && (Date.now()-_fcT0)<ADK_HH_WAIT_MS; }
+// Persistent loop. Until the kills have landed once: ADV + MASTER every cycle (B until it lands), quickly.
+// Afterwards a cheap detector for fresh (re-evaluated, unpatched) copies: ADV + MASTER every ADK_LIGHT_MS,
+// B every 4th cycle. DAI never matched in any device log, so it only gets the first two cycles, then every 12th.
+function fastADK(){ if(!HH_ENABLED) return;
+  if(adkHold()){ setTimeout(fastADK,500); return; }
+  if(!_adkStarted){ _adkStarted=true; L('fastADK: starting at +'+(Date.now()-_fcT0)+'ms (household landed='+hhLanded()+' clcs='+clcsDone+' hh='+hhDone+' route2='+frDone+' mhu='+mhuHits+')'); }
+  _adkN++;
   var rs=null; try{ rs=Process.enumerateRanges('rw-'); }catch(e){}
   if(!rs){ setTimeout(fastADK,2000); return; }
-  var light=(advDone&&masterDone&&bDone)&&(_adkN%4!==0), pend=light?2:4;
-  function fin(){ if(--pend>0) return;
-    setTimeout(fastADK, (advDone&&masterDone&&bDone)?5000:(_adkN<60?2500:8000)); }
-  adkAdv(rs,fin); adkMaster(rs,fin); if(!light){ adkB(rs,fin); adkDai(rs,fin); } }
+  var jobs=ADK_ADV_ENABLED?[adkAdv,adkMaster]:[adkMaster];
+  if(!bDone||_adkN%4===0) jobs.push(adkB);
+  if(_adkN<=2||_adkN%12===0) jobs.push(adkDai);
+  var pend=jobs.length;
+  function fin(){ if(--pend>0) return;      // evaluated when the cycle ends: the scans above may have just landed the kills
+    setTimeout(fastADK, ((advDone||!ADK_ADV_ENABLED)&&masterDone&&bDone)?ADK_LIGHT_MS:(_adkN<60?2500:8000)); }
+  for(var ji=0;ji<jobs.length;ji++) jobs[ji](rs,fin); }
+
+// ---------- (ADDIAG) ad-path recon — read-only, starts once the ad-kill has started (killlog8) ----------
+// killlog8: every ad patch landed before the first play and no fresh player copy appeared, yet pre-roll and
+// mid-roll still played. The repo has no dump of the CURRENT ad consumers, so dump them: the getAdMetadata
+// callers/definition, the empty-break handler, the embedded-extension enricher, the playgraph builder and the
+// legacy pod seams. JS-source hits are dumped whole (up to ADD_MAX each); non-source hits (telemetry/network
+// buffers) are dumped as short ADDIAG-DATA windows, which also show whether a runtime event such as
+// emptyAdBreakComplete fired. Sliced on the ad queue (2), so it never delays the household sweeps.
+var AD_DIAG=true;
+var ADD_MARKERS=['getAdMetadata','emptyAdBreakComplete','enrichAdsWithEmbeddedExtension','createAdsPlaygraph','_syncAdsLength','prepareAdBreakStates','StatefulAdBreak'];
+var ADD_BEFORE=300, ADD_AFTER=1100, ADD_MAX=3, ADD_DATA_MAX=2, addSeen={}, addCount={}, addData={}, _addN=0;
+function adDiag(){ if(!AD_DIAG||!HH_ENABLED) return;
+  if(!_adkStarted){ setTimeout(adDiag,2000); return; }
+  _addN++;
+  var rs=null; try{ rs=Process.enumerateRanges('rw-'); }catch(e){}
+  if(!rs){ setTimeout(adDiag,5000); return; }
+  var left=0;
+  function after(){ var all=true; for(var q=0;q<ADD_MARKERS.length;q++) if(!addCount[ADD_MARKERS[q]]) all=false;
+    if(all||_addN>=4){ L('ADDIAG done after '+_addN+' passes'); return; }
+    setTimeout(adDiag,15000); }
+  function one(mk){ left++;
+    aScanAll(rs,pat(mk),function(a){
+        var key=mk+'@'+a; if(addSeen[key]) return; addSeen[key]=true; var ctx=null;
+        try{ ctx=a.sub(ADD_BEFORE).readCString(ADD_BEFORE+mk.length+ADD_AFTER); }catch(e){}
+        if(ctx==null||ctx.indexOf(mk)<0) return;
+        var t=Math.round((Date.now()-_fcT0)/1000);
+        if(looksLikeJs(ctx)){ if((addCount[mk]||0)>=ADD_MAX) return; addCount[mk]=(addCount[mk]||0)+1;
+          L('ADDIAG '+mk+' #'+addCount[mk]+' @'+a+' +'+t+'s ctx='+JSON.stringify(ctx)); }
+        else { if((addData[mk]||0)>=ADD_DATA_MAX) return; addData[mk]=(addData[mk]||0)+1;
+          L('ADDIAG-DATA '+mk+' #'+addData[mk]+' @'+a+' +'+t+'s ctx='+JSON.stringify(ctx.slice(Math.max(0,ADD_BEFORE-160),ADD_BEFORE+mk.length+240))); } },
+      function(){ if(--left===0) after(); }, 2); }
+  for(var mi=0;mi<ADD_MARKERS.length;mi++) if(!addCount[ADD_MARKERS[mi]]) one(ADD_MARKERS[mi]);   // markers already dumped are not rescanned
+  if(left===0) after(); }
 
 // Read-only diagnostic: find each CLCS_MARKERS string in the JS heap and dump ~100 chars of context
 // per hit so the runtime consumer site can be identified from logcat. Runs only while HH_ENABLED and
@@ -755,7 +843,8 @@ function hhHookJobs(){
   jobs.push([pat(FR_ANCHOR), function(a){ var r=route2At(a); if(r>=0) frDone=true; return r===1?1:0; }]);
   for(i=0;i<HH_ANCHORS.length;i++) (function(AN){ jobs.push([pat(AN.a), function(a){ var w=hhAnchorAt(a,AN); if(hhFlipped[HH_W_LBL]) hhDone=true; return w; }]); })(HH_ANCHORS[i]);
   if(MHU_ENABLED) jobs.push([pat('MHU_'), function(a){ return mhuSeedAt(a,' EVAL'); }]);
-  jobs.push([pat(ADK_ADV_ANCH), adkAdvAt]); jobs.push([ADK_M1_PAT, adkMasterAt]);
+  if(ADK_ADV_ENABLED) jobs.push([pat(ADK_ADV_ANCH), adkAdvAt]);
+  jobs.push([ADK_M1_PAT, adkMasterAt]);
   jobs.push([pat(B_ANCHOR), adkBAt]); jobs.push([pat(DAI_ANCHOR), adkDaiAt]);
   if(HH_NOCACHE>0){ jobs.push([pat(CACHE_A_OLD), function(a){ wrS(a,CACHE_A_NEW); return 1; }]); jobs.push([pat(CACHE_B_OLD), function(a){ wrS(a,CACHE_B_NEW); return 1; }]); }
   return jobs; }
@@ -804,9 +893,20 @@ function patchEvalSrc(src,tag){
 }
 function drainEvalQ(){ _evalDrainArmed=false;
   while(_evalQ.length){ var q=_evalQ.shift(); try{ patchEvalSrc(q.src,q.tag); }catch(e){ L('EVAL drain ERR '+e); } } }
+// Hook diagnostics (killlog7: 186 evals, 0 edits, and nothing said whether the String walk found any script).
+// _evalSrcCalls = evals where the walk located >=1 script String; first 24 located sources and every source
+// >=1MB (max 12) are logged with length + head, and the first 6 evals with NO source log their r0-r2.
+var _evalSrcCalls=0, _evalSrcN=0, _evalLogN=0, _evalBigN=0, _evalNoSrcLog=0;
+function evalNote(ctx,srcs){
+  if(!srcs.length){ if(_evalNoSrcLog++<6) L('EVALSRC#'+_evalN+' none located r0='+ctx.r0+' r1='+ctx.r1+' r2='+ctx.r2); return; }
+  _evalSrcCalls++; _evalSrcN+=srcs.length;
+  for(var i=0;i<srcs.length;i++){ var big=srcs[i].len>=1048576;
+    if(_evalLogN<24||(big&&_evalBigN<12)){ _evalLogN++; if(big) _evalBigN++; var head=''; try{ head=srcs[i].p.add(12).readCString(48); }catch(e){}
+      L('EVALSRC#'+_evalN+' len='+srcs[i].len+' head='+JSON.stringify(head)+' +'+(Date.now()-_fcT0)+'ms'); } } }
 function onEvalEnter(ctx){
   _evalN++;
   var srcs=findEvalSources(ctx);
+  try{ evalNote(ctx,srcs); }catch(e){}
   if(srcs.length) _lastEvalT=Date.now();
   for(var i=0;i<srcs.length;i++){
     if(EVAL_DEFER){ _evalQ.push({src:srcs[i],tag:'#'+_evalN}); }
@@ -912,11 +1012,12 @@ setTimeout(fastMASTER,200);
 L('dumpMASTER armed (recon: dump getAdMetadata body if both exact+wildcard MASTER miss — #166)');
 setTimeout(dumpMASTER,2000);
 }
-if(HH_ENABLED){ L('fastADK armed (async ad-kill: ADV2 + MASTER2 + B + DAI, rename-tolerant)'); setTimeout(fastADK,300); }
+if(HH_ENABLED){ L('fastADK armed (async ad-kill: '+(ADK_ADV_ENABLED?'ADV2 + ':'')+'MASTER2 + B + DAI, rename-tolerant; starts after household lands)'); setTimeout(fastADK,300); }
 if(HH_ENABLED){ L('fastHH armed (household prompt suppression, early race-win scanner)'); setTimeout(fastHH,200);
 }
 if(CLCS_PROBE_ENABLED){ L('clcsProbe armed (DEV recon: locate runtime CLCS interstitial consumer — Nikflix seam)'); setTimeout(clcsProbe,200); }
 if(HH_ENABLED){ L('fastCLCS armed (gate dispatcher race-win)'); setTimeout(fastCLCS,100); }
 if(EVALHOOK_ENABLED){ L('evalHook arming (household pre-compile source patch)'); startEvalHook(); }
-if(HH_ENABLED&&HH_DIAG){ L('HHDIAG armed (status every 5s + household routing JS dumps)'); setTimeout(hhStatus,3000); setTimeout(hhDiag,12000); }
+if(HH_ENABLED&&HH_DIAG){ L('HHDIAG armed (status every 5s'+(HH_DUMPS?' + household routing JS dumps':'')+')'); setTimeout(hhStatus,3000); if(HH_DUMPS) setTimeout(hhDiag,12000); }
+if(HH_ENABLED&&AD_DIAG){ L('ADDIAG armed (ad-path recon once the ad-kill has started)'); setTimeout(adDiag,4000); }
 
