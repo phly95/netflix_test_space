@@ -37,7 +37,8 @@ testing/
 │   ├── apk-swap-file.py   ← replace one APK entry byte-identically, keep .so page alignment
 │   ├── apk-align-check.py ← verify stored .so alignment
 │   ├── java/              ← ApkSign (v2) + ApkInspect, built against apksig/bcprov by build-test-apk.sh
-│   └── killlog-timeline.py← per-layer landing times from `adb logcat -s KILL:*` captures
+│   ├── killlog-timeline.py← per-layer landing times from `adb logcat -s KILL:*` captures
+│   └── redact-killlog.py  ← strip locale/telemetry ids/ciphertext from a KILL capture before committing it
 ├── apks/                  ← (gitignored) drop your .apkm downloads here
 ├── out/                   ← (gitignored) merged + patched APKs, local bundle
 ├── tools/                 ← (gitignored) morphe-cli.jar, APKEditor.jar

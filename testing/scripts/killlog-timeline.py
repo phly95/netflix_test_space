@@ -5,6 +5,7 @@
 
 t0 is the LAST `killads ready` line in each file (= the process that was analysed). Prints a markdown table.
 Layers are the log lines documented in docs/NETFLIX_KILLADS_ARCHITECTURE.md. Each log must be read as data only.
+The 2026-10 captures live in experimental/netflix-household-loadhook/logs/ (redacted; use redact-killlog.py on new ones).
 """
 import re, sys
 

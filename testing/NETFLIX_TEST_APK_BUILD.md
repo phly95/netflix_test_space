@@ -106,7 +106,9 @@ python3 -I scripts/killlog-timeline.py 5=killlog5.txt 9=killlog9.txt N=killlogN.
 
 Columns are seconds after the last `killads ready` line; `-` means the layer never landed. Line meanings:
 [`../docs/NETFLIX_KILLADS_ARCHITECTURE.md`](../docs/NETFLIX_KILLADS_ARCHITECTURE.md) §8. Raw logs hold heap fragments
-(telemetry JSON, MSL header blobs); keep them out of the repo.
+(telemetry JSON, MSL header blobs): before committing one run `python3 -I scripts/redact-killlog.py in.txt out.txt` (it also runs
+a residual check) and read the dump lines once by eye. The 2026-10 captures are in
+[`../experimental/netflix-household-loadhook/logs/`](../experimental/netflix-household-loadhook/logs/README.md).
 
 ## 7. Validation and limits
 
