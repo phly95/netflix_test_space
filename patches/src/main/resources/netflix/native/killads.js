@@ -560,6 +560,13 @@ var HH_NOCACHE=0;            // 0 = leave Netflix's script cache alone (default)
 // (~1-2s later). Scanning inside the callback (8 MB appboot x several patterns, while waiting on the
 // Frida JS lock) stalled boot at the splash screen.
 var EVAL_DEFER=true;
+// EVAL_ARM_DLOPEN: also arm via an android_dlopen_ext hook. OFF: builds with it hung at the splash on
+// device (Interceptor's onLeave rewrites the return address libdl uses to pick the caller's linker
+// namespace — a known way to break library loading on Android 7+). Arming by polling is enough: the
+// play-time household module loads long after libnetflix.so.
+var EVAL_ARM_DLOPEN=false;
+// EVAL_ONENTER_NOOP: diagnostic only — attach the hook but do nothing in onEnter except count.
+var EVAL_ONENTER_NOOP=false;
 var EVAL_PROLOGUE=0x137626c;                 // Gibbon2Bridge eval callback prologue (13.0.1 build 25028)
 var EVAL_SIG=[[0x0,0xe92d48f0],[0x14,0xe1a07002],[0x18,0xe1a04001]];  // push{r4-r7,fp,lr}; mov r7,r2; mov r4,r1
 var CACHE_A_OLD='nr.script.addEventListener("script",(e=>{0!==e.version&&e.usedCache||e.cache(1)}))';
@@ -681,17 +688,19 @@ function armEvalHook(){
   if(HH_NOCACHE>0){ try{ var rr=m.enumerateRanges('rw-');
     for(var q=0;q<rr.length;q++) noCachePatchRange(rr[q].base, rr[q].size, '(so)'); }catch(e){ L('EVALHOOK: so-data cache patch error '+e); } }
   try{
-    Interceptor.attach(at, { onEnter:function(){ try{ onEvalEnter(this.context); }catch(e){ L('EVALHOOK onEnter ERR '+e); } } });
-    L('EVALHOOK armed @'+at+' (household edits applied to each evaluated source; defer='+EVAL_DEFER+' nocache='+HH_NOCACHE+')');
+    Interceptor.attach(at, { onEnter:EVAL_ONENTER_NOOP ? function(){ _evalN++; }
+                                                       : function(){ try{ onEvalEnter(this.context); }catch(e){ L('EVALHOOK onEnter ERR '+e); } } });
+    L('EVALHOOK armed @'+at+' (household edits applied to each evaluated source; defer='+EVAL_DEFER+' nocache='+HH_NOCACHE+' noop='+EVAL_ONENTER_NOOP+')');
+    if(EVAL_ONENTER_NOOP) setInterval(function(){ L('EVALHOOK noop: '+_evalN+' eval calls so far'); },15000);
   }catch(e){ L('EVALHOOK: attach failed '+e+' — heap-scan fallback only'); }
   return true;
 }
-// libnetflix.so is loaded after the gadget (gadget loads first thing in Application.onCreate), so
-// arm on its dlopen (before JNI_OnLoad / nrdp boot), with a light poll as a backstop.
+// libnetflix.so is loaded after the gadget (gadget loads first thing in Application.onCreate): arm by
+// a light 100ms poll (optionally also on its dlopen — see EVAL_ARM_DLOPEN).
 function startEvalHook(){
   if(!EVALHOOK_ENABLED) return;
   if(armEvalHook()) return;
-  try{ var dl=Module.findGlobalExportByName('android_dlopen_ext');
+  if(EVAL_ARM_DLOPEN) try{ var dl=Module.findGlobalExportByName('android_dlopen_ext');
     if(dl) Interceptor.attach(dl,{
       onEnter:function(a){ try{ this.nf=a[0].readCString().indexOf('netflix')>=0; }catch(e){ this.nf=false; } },
       onLeave:function(){ if(this.nf&&!evalHooked) armEvalHook(); } });
