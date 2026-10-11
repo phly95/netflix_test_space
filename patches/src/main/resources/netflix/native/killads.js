@@ -317,7 +317,7 @@ function patchHH(rs){ if(hhDone||!HH_ENABLED)return;
 // (if the MASTER anchor is absent this launch there are no ads to protect, and HH is time-critical).
 var _fastHHn=0, _fastHHwait=0;
 function fastHH(){ if(!HH_ENABLED||hhDone)return;
-  if(!masterDone && _fastHHwait<300){ _fastHHwait++; setTimeout(fastHH,100); return; }   // yield to fastMASTER
+  if(!masterDone && _fastHHwait<30){ _fastHHwait++; setTimeout(fastHH,100); return; }   // yield to fastMASTER (3s max; was 30s, which lost the household race whenever MASTER misses, e.g. M2-MISS on current 13.0.1 JS)
   if(_fastHHwait && _fastHHn===0) L('fastHH: released after '+_fastHHwait+' waits (masterDone='+masterDone+')');
   _fastHHn++;
   try{ var _r=Process.enumerateRanges('rw-'); patchHH(_r); neuterMhuRenders(_r); }catch(e){}
@@ -362,12 +362,26 @@ function mhuNeuterAt(addr, anchorLen, nm, how){
   L('PATCH MHU'+(how||'')+': '+nm+' render->null ('+nlIdx+'B decls) @'+body);
   return 1;
 }
+// HOT WINDOWS (2026-10): all MHU screens are registered in ONE module (a ~14KB block on device), but each
+// pattern used to be a full-heap scan (~2-3s each on the TV: 6 screens took 12s after the first hit, the
+// household screen was already up). Once any MHU anchor is seen we remember where, and scan only +-1MB
+// around those addresses for the remaining names (full pass again every 10th call, for a module copy
+// elsewhere), so the rest land in milliseconds.
+var mhuHot=[], _mhuCalls=0, MHU_WIN=1024*1024;
+function mhuNoteHot(a){ for(var i=0;i<mhuHot.length;i++){ if(Math.abs(a.sub(mhuHot[i]).toInt32())<MHU_WIN/2) return; } mhuHot.push(a); }
+function mhuWindows(rs){ var out=[];
+  for(var i=0;i<mhuHot.length;i++){ var a=mhuHot[i];
+    for(var k=0;k<rs.length;k++){ var r=rs[k], off=a.sub(r.base).toInt32();
+      if(off>=0&&off<r.size){ var lo=Math.max(0,off-MHU_WIN), hi=Math.min(r.size,off+MHU_WIN); out.push({base:r.base.add(lo),size:hi-lo}); break; } } }
+  return out; }
 function neuterMhuRenders(rs){ if(!MHU_ENABLED)return;
+  var callN=_mhuCalls++, full=(mhuHot.length===0)||(callN%10===9), scanSet=full?rs:mhuWindows(rs);
   for(var pi=0;pi<MHU_PATS.length;pi++){ var nm=MHU_PATS[pi]; if(mhuDoneSet[nm])continue;
     var anchor=nm+',render:function(e){', p=pat(anchor);
-    for(var i=0;i<rs.length;i++){var r=rs[i];if(r.size>128*1024*1024)continue;
+    for(var i=0;i<scanSet.length;i++){var r=scanSet[i];if(r.size>128*1024*1024)continue;
       try{var h=Memory.scanSync(r.base,r.size,p);
         for(var j=0;j<h.length;j++){
+          mhuNoteHot(h[j].address);
           var head=null; try{head=h[j].address.add(anchor.length).readCString(4);}catch(e){}
           if(head==='retu'){ mhuDoneSet[nm]=true; continue; }
           if(mhuNeuterAt(h[j].address, anchor.length, nm)){ mhuDoneSet[nm]=true; mhuHits++; }
@@ -468,7 +482,7 @@ function hhYield(){ return HH_ENABLED && !clcsDone && (Date.now()-_fcT0)<30000; 
 // onEnter on Netflix's own thread — blocks until the pass ends, which on the first device build stalled
 // boot at the splash screen. (Host repro: 600 calls of a hooked function took 5.5s instead of 1.3s with
 // ~0.6s passes running.) So the pass is cut into ~40ms slices with the lock released between them.
-var FC_SLICE_MS=40;
+var FC_SLICE_MS=40, _frSeen=false, _frBad=false;
 function fastCLCS(){ if(!HH_ENABLED)return; _fcN++;
   var rs=Process.enumerateRanges('rw-'), idx=0, hit=0, wrote=0, hit2=0, wrote2=0;
   var p=pat(FC_ANCHOR), p2=pat(FR_ANCHOR);
@@ -490,8 +504,9 @@ function fastCLCS(){ if(!HH_ENABLED)return; _fcN++;
       try{ var h2=Memory.scanSync(r.base,r.size,p2);
         for(var j2=0;j2<h2.length;j2++){ var t2=h2[j2].address.add(FR_ANCHOR.length);
           var vc=t2.readU8(), c1=t2.add(1).readU8(), c2=t2.add(2).readU8();
+          if(!_frSeen){ _frSeen=true; L('DIAG route2 anchor RESIDENT @'+t2+' next='+JSON.stringify(t2.readCString(24))+' at +'+(Date.now()-_fcT0)+'ms'); }
           if(vc===0x30){ hit2++; continue; }                       // already '0'
-          if(!isAlpha(vc)||c1!==0x29||c2!==0x7b) continue;         // expect <var>){
+          if(!isAlpha(vc)||c1!==0x29||c2!==0x7b){ if(!_frBad){ _frBad=true; L('DIAG route2 anchor found but guard shape UNEXPECTED: '+JSON.stringify(t2.sub(120).readCString(200))); } continue; }   // expect <var>){
           Memory.protect(t2,1,'rw-'); t2.writeU8(0x30); hit2++; wrote2++;
           L('PATCH CLCS(route2): doRouteOnFetchedInterstitial !'+String.fromCharCode(vc)+'->!0 (playback interstitial -> exit) @'+t2); } }catch(e){}
       if(Date.now()-t0>FC_SLICE_MS){ setTimeout(slice,5); return; }   // release the Frida lock
@@ -499,6 +514,40 @@ function fastCLCS(){ if(!HH_ENABLED)return; _fcN++;
     finish(); }
   slice();
 }
+// ---------- (HHDIAG) household diagnostics — read-only, sliced (2026-10) ----------
+// 1) HHSTATUS every 5s (~5 min): which household layers have landed. Cheap; the old ANCHOR MAP never
+//    printed in 49s because the full-heap scans starved its timer.
+// 2) Context dumps of the REAL household routing JS from the TV heap (the repo has none on file), so the
+//    route that still shows the household screen after profile select can be found and neutered
+//    precisely. Same sliced scan style as fastCLCS; each marker dumped at most HHD_MAX times, only where
+//    the surrounding text looks like JS source (not network/telemetry buffers).
+var HH_DIAG=true;
+var HHD_MARKERS=['pushClcsInterstitialGate','doRouteOnFetchedInterstitial','replaceWithClcsInterstitialGate',
+                 'clcsInterstitialPreProfileGate','isNetflixHouseholdAvailable'];
+var HHD_BEFORE=360, HHD_AFTER=840, HHD_MAX=3;
+var hhdSeen={}, hhdCount={}, _hhdN=0, _hhdDone=false;
+function hhStatus(){ if(!HH_DIAG) return;
+  L('HHSTATUS +'+Math.round((Date.now()-_fcT0)/1000)+'s clcs='+clcsDone+' route2='+frDone+' hh='+hhDone+' mhu='+mhuHits+'/'+MHU_PATS.length+' hot='+mhuHot.length+' fcPass='+_fcN+' eval='+_evalN);
+  if(Date.now()-_fcT0<300000) setTimeout(hhStatus,5000); }
+function looksLikeJs(c){ var n=0; for(var i=0;i<c.length&&n<8;i++){ var ch=c.charCodeAt(i); if(ch===59||ch===123||ch===125||ch===40) n++; } return n>=8; }
+function hhDiag(){ if(!HH_DIAG||_hhdDone) return; _hhdN++;
+  var rs=Process.enumerateRanges('rw-'), idx=0, mi=0;
+  function slice(){ var t0=Date.now();
+    while(idx<rs.length){ var r=rs[idx++]; if(r.size>128*1024*1024) continue;
+      for(mi=0;mi<HHD_MARKERS.length;mi++){ var mk=HHD_MARKERS[mi]; if((hhdCount[mk]||0)>=HHD_MAX) continue;
+        var h=null; try{ h=Memory.scanSync(r.base,r.size,pat(mk)); }catch(e){ continue; }
+        for(var j=0;j<h.length&&(hhdCount[mk]||0)<HHD_MAX;j++){ var a=h[j].address, key=mk+'@'+a;
+          if(hhdSeen[key]) continue; var ctx=null;
+          try{ ctx=a.sub(HHD_BEFORE).readCString(HHD_BEFORE+mk.length+HHD_AFTER); }catch(e){}
+          if(ctx==null||ctx.indexOf(mk)<0||!looksLikeJs(ctx)) continue;
+          hhdSeen[key]=true; hhdCount[mk]=(hhdCount[mk]||0)+1;
+          L('HHDIAG '+mk+' #'+hhdCount[mk]+' @'+a+' +'+Math.round((Date.now()-_fcT0)/1000)+'s ctx='+JSON.stringify(ctx)); } }
+      if(Date.now()-t0>FC_SLICE_MS){ setTimeout(slice,5); return; } }
+    var all=true; for(var q=0;q<HHD_MARKERS.length;q++) if((hhdCount[HHD_MARKERS[q]]||0)<HHD_MAX) all=false;
+    if(all||_hhdN>=40){ _hhdDone=true; L('HHDIAG done after '+_hhdN+' passes'); return; }
+    setTimeout(hhDiag,4000); }
+  slice(); }
+
 // Read-only diagnostic: find each CLCS_MARKERS string in the JS heap and dump ~100 chars of context
 // per hit so the runtime consumer site can be identified from logcat. Runs only while HH_ENABLED and
 // stops once ANY marker is seen resident (per-marker recon showed household loads ~+30-44s in), to
@@ -783,4 +832,5 @@ if(HH_ENABLED){ L('fastHH armed (household prompt suppression, early race-win sc
 if(CLCS_PROBE_ENABLED){ L('clcsProbe armed (DEV recon: locate runtime CLCS interstitial consumer — Nikflix seam)'); setTimeout(clcsProbe,200); }
 if(HH_ENABLED){ L('fastCLCS armed (gate dispatcher race-win)'); setTimeout(fastCLCS,100); }
 if(EVALHOOK_ENABLED){ L('evalHook arming (household pre-compile source patch)'); startEvalHook(); }
+if(HH_ENABLED&&HH_DIAG){ L('HHDIAG armed (status every 5s + household routing JS dumps)'); setTimeout(hhStatus,3000); setTimeout(hhDiag,12000); }
 

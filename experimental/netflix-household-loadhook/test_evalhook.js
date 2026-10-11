@@ -8,7 +8,7 @@ const SRC=process.argv[2], SNIP=process.argv[3];
 const MEM=Buffer.alloc(4*1024*1024); let brk=0x1000;
 function alloc(n){ const a=brk; brk+=(n+15)&~15; return a; }
 class P{ constructor(o){ this.o=Number(o)>>>0; }
-  add(n){ return new P(this.o+Number(n instanceof P?n.o:n)); } sub(n){ return new P(this.o-Number(n)); }
+  add(n){ return new P(this.o+Number(n instanceof P?n.o:n)); } sub(n){ return new P((this.o-(n instanceof P?n.o:Number(n)))>>>0); }
   chk(n){ if(this.o<0x1000||this.o+n>MEM.length) throw new Error('access violation @'+this.o.toString(16)); }
   readU8(){ this.chk(1); return MEM[this.o]; } readU32(){ this.chk(4); return MEM.readUInt32LE(this.o); }
   readInt(){ this.chk(4); return MEM.readInt32LE(this.o); }
@@ -21,10 +21,12 @@ class P{ constructor(o){ this.o=Number(o)>>>0; }
   toString(){ return '0x'+this.o.toString(16); } }
 const ptr=x=>new P(typeof x==='string'?parseInt(x):x);
 const logs=[], pendingDrain=[], timers=[]; let sandboxRanges=()=>[];
+const scanSizes=[];
 const Memory={ protect(){return true;}, allocUtf8String(s){ const a=alloc(s.length+1); MEM.write(s,a,'latin1'); return new P(a); },
-  scanSync(base,size,patStr){ const needle=Buffer.from(patStr.split(' ').map(h=>parseInt(h,16)));
+  scanSync(base,size,patStr){ scanSizes.push(size); const needle=Buffer.from(patStr.split(' ').map(h=>parseInt(h,16)));
     base.chk(size); const out=[]; let i=base.o; const end=base.o+size;
     while(true){ i=MEM.indexOf(needle,i); if(i<0||i+needle.length>end)break; out.push({address:new P(i),size:needle.length}); i++; } return out; } };
+function strAtRaw(a,n){ return MEM.toString('latin1',a,a+n); }
 const sandbox={ console, Memory, ptr, NativePointer:P, Date, JSON, Math, Object, String, Number, Uint8Array, parseInt, isNaN,
   NativeFunction:function(){ return function(lvl,tag,msg){ logs.push(msg.readCString()); return 0; }; },
   Module:{ findGlobalExportByName(){ return new P(0x10); } },
@@ -32,7 +34,7 @@ const sandbox={ console, Memory, ptr, NativePointer:P, Date, JSON, Math, Object,
   Interceptor:{ attach(){ throw new Error('no attach in test'); } },
   setTimeout(fn,ms){ if(fn&&fn.name==='drainEvalQ') pendingDrain.push(fn); else timers.push({fn,ms}); return 0; } };  // timers run on demand
 let code=fs.readFileSync(SRC,'latin1').replace('HH_ENABLED=false','HH_ENABLED=true').replace(/var HH_NOCACHE=\d;/,'var HH_NOCACHE=2;');  // exercise the full cache path
-vm.createContext(sandbox); vm.runInContext(code+'\n;this.__t={hhPatchRange,noCachePatchRange,findEvalSources,seqStrLen,onEvalEnter,CACHE_A_NEW,CACHE_A_OLD,CACHE_B_NEW,CACHE_B_OLD,st:function(){return {clcsDone,frDone,hhDone};}};',sandbox);
+vm.createContext(sandbox); vm.runInContext(code+'\n;this.__t={neuterMhuRenders,hhPatchRange,noCachePatchRange,findEvalSources,seqStrLen,onEvalEnter,CACHE_A_NEW,CACHE_A_OLD,CACHE_B_NEW,CACHE_B_OLD,st:function(){return {clcsDone,frDone,hhDone};}};',sandbox);
 const T=sandbox.__t; let fail=0;
 function ok(c,m){ console.log((c?'PASS ':'FAIL ')+m); if(!c)fail++; }
 // Lay out a V8 SeqOneByteString: map | hash | length | chars ; return untagged address
@@ -101,6 +103,19 @@ ok(cleared===1 && listeners.length===0 && cached===0, 'rewritten bootstrap runs:
   ok(strAt(hmA).includes('!0){p.next=24')&&strAt(hmB).includes('!0){p.next=24'), 'sweep patched route2 in both unpatched copies');
   ok(strAt(hmA).includes('case"xlcsInterstitialGate"')&&strAt(hmB).includes('case"xlcsInterstitialGate"'), 'sweep broke dispatcher labels in both copies');
   sandboxRanges=()=>[]; timers.length=0; }
+
+// 2c) MHU hot windows: after the first MHU anchor is seen, later passes only scan +-1MB around it
+{ const decl='var t=e.a,n=e.b,r=(0,i.useState)(null),o=r[0],u=(0,i.useRef)(null),w=1;\nreturn(0,u.j)("div",{})}';
+  const base=alloc(4*1024*1024-0x10000)-0; const A=base+0x1000, B=base+0x1000+100*1024;
+  const put=(a,txt)=>MEM.write(txt,a,'latin1');
+  put(A,'MHU_RESOLUTION_LANDING,render:function(e){'+decl);
+  const range=[{base:new P(base),size:3*1024*1024}];
+  scanSizes.length=0; vm.runInContext('MHU_ENABLED=true;',sandbox); sandbox.__t.neuterMhuRenders(range);
+  ok(strAtRaw(A,60).includes('return null;'), 'MHU first hit patched by the full pass');
+  put(B,'MHU_MANAGE_HOUSEHOLD,render:function(e){'+decl);   // a second screen appears next to it later
+  scanSizes.length=0; sandbox.__t.neuterMhuRenders(range);
+  ok(strAtRaw(B,60).includes('return null;'), 'second MHU screen near the first is patched on the next call');
+  ok(scanSizes.length>0 && Math.max(...scanSizes)<=2*1024*1024+4, 'that call only scanned small windows (max '+Math.max(...scanSizes)+' bytes, not the 3MB range)'); }
 
 // 3) Unrelated large source: nothing written
 const sD=v8str(pad(5000)+'function foo(){return 1}'+pad(5000));
